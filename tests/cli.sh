@@ -742,6 +742,54 @@ set -e
 git -C "$failure_repo" diff --quiet || fail 'post-test failure left downstream source dirty'
 pass 'post-test health failure restores exact prior generation and source'
 
+signal_generation_capture="$test_root/signal-generation"
+test_term_recovery() (
+  local phase=$1 activation_started=$2 work=$3
+  export NIXDB_CURRENT_SYSTEM="$test_root/current-system"
+  source_cli "$manifest" "$failure_repo"
+  tx_old_commit=$(git -C "$failure_repo" rev-parse HEAD)
+  tx_old_branch=$(git -C "$failure_repo" symbolic-ref --short HEAD)
+  tx_old_system=$fake_system
+  tx_old_generation=7
+  tx_lock_backup="$test_root/term-${activation_started}.lock"
+  install -m 0600 "$failure_repo/flake.lock" "$tx_lock_backup"
+  work_tmp="$work"
+  mkdir -p "$work_tmp"
+  touch "$work_tmp/candidate-artifact"
+  deployment_phase=$phase
+  tx_activation_started=$activation_started
+  nix-env() {
+    if [[ $1 == --switch-generation ]]; then
+      printf '%s\n' "$2" >"$signal_generation_capture"
+    fi
+  }
+  trap 'transaction_failure 143' TERM
+  kill -TERM "$BASHPID"
+)
+
+before_term_lock=$(sha256sum "$failure_repo/flake.lock")
+term_pre_work="$test_root/term-before-activation"
+set +e
+test_term_recovery 'candidate preparation' 0 "$term_pre_work" >/dev/null 2>&1
+term_pre_rc=$?
+set -e
+((term_pre_rc == 143)) || fail "pre-activation TERM did not preserve signal exit code $term_pre_rc"
+[[ ! -e "$term_pre_work" ]] || fail 'pre-activation TERM did not clean the private candidate worktree'
+[[ "$before_term_lock" == "$(sha256sum "$failure_repo/flake.lock")" ]] || fail 'pre-activation TERM changed downstream flake.lock'
+git -C "$failure_repo" diff --quiet || fail 'pre-activation TERM left downstream source dirty'
+
+term_post_work="$test_root/term-after-test"
+set +e
+test_term_recovery 'test candidate' 1 "$term_post_work" >/dev/null 2>&1
+term_post_rc=$?
+set -e
+((term_post_rc == 143)) || fail "post-test TERM did not preserve signal exit code $term_post_rc"
+[[ ! -e "$term_post_work" ]] || fail 'post-test TERM did not clean the private candidate worktree'
+[[ $(cat "$signal_generation_capture") == 7 ]] || fail 'post-test TERM did not restore the exact prior generation'
+[[ "$before_term_lock" == "$(sha256sum "$failure_repo/flake.lock")" ]] || fail 'post-test TERM changed downstream flake.lock'
+git -C "$failure_repo" diff --quiet || fail 'post-test TERM left downstream source dirty'
+pass 'TERM recovery cleans candidate state and restores the exact generation after test'
+
 atomic_state_dir="$test_root/atomic-state"
 test_atomic_deployment_state() (
   export NIXDB_STATE_DIR="$atomic_state_dir"
