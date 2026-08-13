@@ -73,22 +73,35 @@ make_manifest "$manifest"
 
 test_stable_tag_filter_and_order() (
   source_cli "$manifest" "$test_root/non-git"
+  tag_fixture=''
   git() {
     if [[ $1 == ls-remote ]]; then
-      cat <<'EOF'
-1 refs/tags/v0.2.9
+      printf '%s\n' "$tag_fixture"
+    else
+      command git "$@"
+    fi
+  }
+  tag_fixture='1 refs/tags/v0.2.9
+2 refs/tags/v0.2.10'
+  [[ $(latest_stable_tag) == v0.2.10 ]]
+  tag_fixture='1 refs/tags/v0.2.9
+2 refs/tags/v0.2.10
+3 refs/tags/v0.10.0'
+  [[ $(latest_stable_tag) == v0.10.0 ]]
+  tag_fixture='1 refs/tags/v0.2.9
 2 refs/tags/v0.2.10
 3 refs/tags/v0.10.0
 4 refs/tags/v1.0.0-rc1
 5 refs/tags/v1.0.0
 6 refs/tags/version-test
-7 refs/tags/vfoo
-EOF
-    else
-      command git "$@"
-    fi
-  }
+7 refs/tags/vfoo'
   [[ $(latest_stable_tag) == v1.0.0 ]]
+  tag_fixture='1 refs/tags/v1.0.0-rc1
+2 refs/tags/v1.0.0-beta1
+3 refs/tags/v1.0.0-pre
+4 refs/tags/vfoo
+5 refs/tags/version-test'
+  [[ -z $(latest_stable_tag) ]]
 )
 test_stable_tag_filter_and_order || fail 'stable tags are strictly filtered and version-sorted'
 pass 'stable tags are strictly filtered and version-sorted'
