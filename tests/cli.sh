@@ -448,6 +448,26 @@ grep -F 'does NOT roll back database' "$rollback_output" >/dev/null
 grep -F -- '--allow-db-binary-rollback' "$rollback_output" >/dev/null
 pass 'rollback warns and blocks recorded DB binary downgrade without opt-in'
 
+target_state="$test_root/target-state"
+mkdir -p "$target_state" "$test_root/recorded-current" "$test_root/recorded-previous" "$test_root/stale-newer"
+ln -s "$test_root/recorded-previous" "$test_root/target-profile-4-link"
+ln -s "$test_root/stale-newer" "$test_root/target-profile-5-link"
+jq -n \
+  --arg system "$test_root/recorded-current" \
+  --arg previousSystem "$test_root/recorded-previous" \
+  '{schemaVersion:1,system:$system,previous:{generation:"4",system:$previousSystem,hostRevision:("a"*40)}}' \
+  >"$target_state/deployment-state.json"
+test_recorded_rollback_target() (
+  export NIXDB_STATE_DIR="$target_state"
+  export NIXDB_SYSTEM_PROFILE="$test_root/target-profile"
+  source_cli "$manifest" "$rollback_repo"
+  select_rollback_target "$test_root/recorded-current" 6
+  [[ "$previous_generation" == 4 ]]
+  [[ "$previous_system" == "$test_root/recorded-previous" ]]
+)
+test_recorded_rollback_target || fail 'rollback selected a stale numerically newer generation'
+pass 'rollback targets the exact recorded pre-deployment generation'
+
 marker_state="$test_root/marker-state"
 mkdir -p "$marker_state/generations" "$test_root/marker-system"
 existing_marker="$marker_state/generations/$(basename "$test_root/marker-system").json"

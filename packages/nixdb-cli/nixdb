@@ -977,7 +977,8 @@ record_generation_state() {
 }
 
 write_deployment_state() {
-  local system_path=$1 host_revision=$2 manifest_data=$3 upgrade=$4 temp
+  local system_path=$1 host_revision=$2 manifest_data=$3 upgrade=$4
+  local previous_system=$5 previous_generation=$6 previous_revision=$7 temp
   install -d -m 0700 "$STATE_DIR"
   temp=$(mktemp "$STATE_DIR/.deployment-state.XXXXXX")
   jq -cn \
@@ -987,11 +988,15 @@ write_deployment_state() {
     --arg frameworkVersion "$(jq -r .framework.version <<<"$manifest_data")" \
     --arg frameworkRevision "$(jq -r .framework.revision <<<"$manifest_data")" \
     --arg timestamp "$(date --iso-8601=seconds)" \
+    --arg previousSystem "$previous_system" \
+    --arg previousGeneration "$previous_generation" \
+    --arg previousHostRevision "$previous_revision" \
     --argjson dbVersions "$(db_versions_from_manifest "$manifest_data")" \
     --argjson dbUpgradeOccurred "$upgrade" \
     '{schemaVersion:1,system:$system,generation:$generation,hostRevision:$hostRevision,
       framework:{version:$frameworkVersion,revision:$frameworkRevision},dbVersions:$dbVersions,
-      timestamp:$timestamp,dbUpgradeOccurred:$dbUpgradeOccurred}' >"$temp"
+      timestamp:$timestamp,dbUpgradeOccurred:$dbUpgradeOccurred,
+      previous:{system:$previousSystem,generation:$previousGeneration,hostRevision:$previousHostRevision}}' >"$temp"
   chmod 0600 "$temp"
   mv -f -- "$temp" "$STATE_DIR/deployment-state.json"
 }
@@ -1116,7 +1121,8 @@ EOF
   fi
   new_commit=$(git -C "$CONFIG_ROOT" rev-parse --verify HEAD)
   record_generation_state "$new_system" "$new_commit" "$candidate_manifest" "$db_upgrade_detected"
-  write_deployment_state "$new_system" "$new_commit" "$candidate_manifest" "$db_upgrade_detected"
+  write_deployment_state "$new_system" "$new_commit" "$candidate_manifest" "$db_upgrade_detected" \
+    "$tx_old_system" "$tx_old_generation" "$tx_old_commit"
   require_clean
   disarm_transaction_traps
   echo 'nixdb: deployment succeeded'
@@ -1186,6 +1192,32 @@ restore_rollback_failure() {
   exit "$rc"
 }
 
+select_rollback_target() {
+  local old_system=$1 old_generation=$2 state recorded_generation recorded_system profile_system
+  state="$STATE_DIR/deployment-state.json"
+  if [[ -r "$state" ]] \
+    && jq -e --arg system "$old_system" '
+      .schemaVersion == 1 and .system == $system
+      and (.previous.generation | type == "string")
+      and (.previous.system | type == "string")
+    ' "$state" >/dev/null 2>&1; then
+    recorded_generation=$(jq -r .previous.generation "$state")
+    recorded_system=$(jq -r .previous.system "$state")
+    profile_system=$(readlink -f "${SYSTEM_PROFILE}-${recorded_generation}-link" 2>/dev/null || true)
+    if [[ -n "$profile_system" && "$profile_system" == "$recorded_system" ]]; then
+      previous_generation=$recorded_generation
+      previous_system=$recorded_system
+      return
+    fi
+    warn 'recorded previous generation is unavailable or no longer matches its system path'
+  fi
+
+  previous_generation=$(nix-env --list-generations -p "$SYSTEM_PROFILE" \
+    | awk -v current="$old_generation" '$1 < current { previous=$1 } END { print previous }')
+  [[ -n "$previous_generation" ]] || die 'no previous NixOS generation is available'
+  previous_system=$(readlink -f "${SYSTEM_PROFILE}-${previous_generation}-link")
+}
+
 cmd_rollback() {
   local allow_binary=false old_commit old_branch old_system old_generation previous_generation previous_system revision
   local current_marker target_marker risky=false
@@ -1201,10 +1233,7 @@ cmd_rollback() {
   old_branch=$(git -C "$CONFIG_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   old_system=$(readlink -f "$CURRENT_SYSTEM")
   old_generation=$(current_generation)
-  previous_generation=$(nix-env --list-generations -p "$SYSTEM_PROFILE" \
-    | awk -v current="$old_generation" '$1 < current { previous=$1 } END { print previous }')
-  [[ -n "$previous_generation" ]] || die 'no previous NixOS generation is available'
-  previous_system=$(readlink -f "${SYSTEM_PROFILE}-${previous_generation}-link")
+  select_rollback_target "$old_system" "$old_generation"
   current_marker=$(generation_marker "$old_system")
   target_marker=$(generation_marker "$previous_system")
   if [[ -r "$current_marker" ]] && jq -e '.dbUpgradeOccurred == true' "$current_marker" >/dev/null; then
@@ -1236,7 +1265,8 @@ EOF
   trap 'restore_rollback_failure $? "$old_commit" "$old_system" "$old_generation" "$old_branch"' ERR
   trap 'restore_rollback_failure 130 "$old_commit" "$old_system" "$old_generation" "$old_branch"' INT
   trap 'restore_rollback_failure 143 "$old_commit" "$old_system" "$old_generation" "$old_branch"' TERM
-  nixos-rebuild switch --rollback
+  nix-env --switch-generation "$previous_generation" -p "$SYSTEM_PROFILE"
+  "$previous_system/bin/switch-to-configuration" switch
   revision=$(mapped_revision "$(readlink -f "$CURRENT_SYSTEM")")
   if [[ "$revision" =~ ^[0-9a-f]{40}$ ]] \
     && git -C "$CONFIG_ROOT" cat-file -e "${revision}^{commit}" 2>/dev/null; then
