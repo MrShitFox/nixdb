@@ -11,20 +11,75 @@ separate locked nixpkgs inputs. Manticore uses a repository-owned, hash-pinned
 package expression. Module assertions reject a package whose version differs
 from its declaration.
 
-## Updating one component
+The three nixpkgs input URLs in `flake.nix` intentionally contain immutable
+revisions. Therefore an engine update has two explicit parts: edit only the
+relevant input URL, then refresh only its lock node. A lock-update command alone
+cannot move an input whose URL still names the old immutable revision.
 
-- NixOS only: update the downstream host's `nixpkgs` input. Do not update its
-  `nixdb` input.
-- MongoDB only: change `mongodb-nixpkgs` in nixdb's flake lock and the declared
-  MongoDB version together, then test supported data-format upgrade paths.
-- MySQL only: change `mysql-nixpkgs` and the declared MySQL version together;
-  check upstream upgrade compatibility before touching existing data.
-- Manticore only: replace the immutable release URL/hash and move every bundled
-  component declaration to the exact upstream-compatible set. Validate a
-  canary before any existing data directory.
+## Inspecting pins
 
-`nixdb update` changes only the downstream `nixdb` input. It does not mutate
-the public project's own database pins independently.
+```console
+cat versions/default.nix
+nix flake metadata --json | jq '.locks.nodes | {nixpkgs, "mongodb-nixpkgs", "mysql-nixpkgs"}'
+nixdb versions
+```
 
-Run `nixdb versions` on a deployed host to compare declared bundle versions
-with observed runtimes.
+## NixOS/project nixpkgs only
+
+1. Edit only `inputs.nixpkgs.url` in `flake.nix` to the intended immutable
+   nixpkgs revision.
+2. Run `nix flake update nixpkgs`.
+3. Review `flake.lock`, run all checks, and test a downstream NixOS build.
+
+Do not change `mongodb-nixpkgs`, `mysql-nixpkgs`, or Manticore declarations in
+this workflow.
+
+## MongoDB only
+
+1. Find a nixpkgs revision whose `mongodb-ce` package is the intended version.
+2. Edit only `inputs.mongodb-nixpkgs.url` and `versions.mongodb`.
+3. Run `nix flake update mongodb-nixpkgs`.
+4. Build `.#mongodb`, run all checks, and follow MongoDB's supported upgrade
+   and backup procedure before an existing data directory sees the binary.
+
+The module asserts that the selected package version equals
+`versions.mongodb`.
+
+## MySQL only
+
+1. Find a nixpkgs revision whose `mysql84` package is the intended version.
+2. Edit only `inputs.mysql-nixpkgs.url` and `versions.mysql`.
+3. Run `nix flake update mysql-nixpkgs`.
+4. Build `.#mysql`, run all checks, and inspect upstream format/rollback
+   compatibility before using an existing data directory.
+
+The module asserts that the selected package version equals `versions.mysql`.
+
+## Manticore bundle only
+
+Manticore is not a flake input. `packages/manticore/default.nix` fetches an
+immutable official bundle URL with a Nix hash and publishes its component
+versions as package metadata. To update it:
+
+1. identify an official Search bundle and its exact coupled Buddy, Columnar,
+   Secondary, KNN, embeddings, executor, backup, load, tzdata, and Galera set;
+2. change the package version, immutable URL, hash, source package metadata,
+   and `passthru.componentVersions` together;
+3. make the matching changes in `versions/default.nix`;
+4. build `.#manticore`, run all checks, and complete the loopback canary from
+   `docs/manticore.md` before any production activation.
+
+Flake evaluation rejects a mismatch between declared Manticore bundle metadata
+and package passthru values. The module also checks the selected package and
+declared Search/component versions.
+
+## Downstream framework updates
+
+`nixdb update` changes only the downstream host's input named by
+`services.nixdb.operator.inputName`. It never edits the nixdb project's own
+engine pins and never runs a general flake update. Before activation it compares
+the active runtime manifest to the candidate evaluation. Any database version
+or Manticore bundle change is blocked unless `--allow-db-upgrade` is explicit.
+
+Never interpret a successful system-generation rollback as a database data or
+format rollback.

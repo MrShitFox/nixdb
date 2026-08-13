@@ -17,7 +17,9 @@ replication, database-content rollback, or a backup framework.
 - XFS project quotas per data directory;
 - inventory-driven services, authentication bootstrap, and firewall ports;
 - evaluation-time checks for duplicate ports, paths, project IDs, and invalid resources;
-- `nixdb` health, status, version, quota, resource, update, and rollback commands;
+- a sanitized, schema-versioned runtime manifest for operator tooling;
+- Git-independent status, health, version, quota, resource, and config commands;
+- deployment planning, database-upgrade guards, transaction recovery, and rollback warnings;
 - a small extension contract for additional database engines.
 
 Only Linux/NixOS on `x86_64-linux` is currently supported. MongoDB Community
@@ -162,27 +164,49 @@ should remain comfortably below `MemoryMax`.
 ## Operator CLI
 
 When `services.nixdb.operator.enable` is true, the module installs `nixdb`
-system-wide and records its downstream settings in `/etc/nixdb/operator.json`.
+system-wide. Evaluated non-secret inventory is written to the schema-versioned
+`/etc/nixdb/manifest.json`; health credentials are kept separately in a
+root-only file. Passwords never appear in the manifest or CLI output.
 
 ```console
 sudo nixdb status
+sudo nixdb status --json
 sudo nixdb health
+sudo nixdb doctor
 sudo nixdb versions
 sudo nixdb quotas
 sudo nixdb resources
 sudo nixdb config
 sudo nixdb logs mongo-example
 sudo nixdb restart mongo-example
+sudo nixdb plan
+sudo nixdb plan --main
+sudo nixdb plan v0.2.0
 sudo nixdb update
 sudo nixdb update --main
 sudo nixdb deploy v0.2.0
 sudo nixdb rollback
 ```
 
-`nixdb update` changes only the downstream flake input named `nixdb`; it never
-runs a general `nix flake update`. It evaluates, builds, tests, validates,
-switches, and validates again. On failure it restores the old host lock,
-checkout, and NixOS generation. See [operations](docs/operations.md).
+Read-only commands use the runtime manifest and continue to work when the host
+configuration is not a Git checkout. Deployment commands intentionally require
+a clean Git checkout.
+
+`nixdb plan` evaluates the candidate in a private temporary copy and never
+changes the host lock or activates services. `nixdb update` accepts only the
+newest exact `vMAJOR.MINOR.PATCH` tag by default; prereleases require an explicit
+ref. If MongoDB, MySQL, Manticore Search, or the coupled Manticore bundle changes,
+deployment stops before `nixos-rebuild test`. Proceed only after reviewing the
+upstream migration and backups:
+
+```console
+sudo nixdb update --allow-db-upgrade
+sudo nixdb deploy v0.3.0 --allow-db-upgrade
+```
+
+The updater changes only the downstream input named `nixdb`; it never performs
+a general flake update. Mutating deployment operations are serialized and use
+transaction recovery. See [operations](docs/operations.md).
 
 ## Adding an instance or engine
 
@@ -203,8 +227,21 @@ expressions. Manticore's coupled components move as one validated bundle. See
 
 ```console
 nix fmt -- --check $(git ls-files '*.nix')
-nix flake check
+nix flake check --print-build-logs
+bash tests/cli.sh .
+bash tests/no-secrets.sh .
 ```
+
+The fast flake checks cover CLI behavior, module evaluation, ShellCheck, and
+secret sanity. The real NixOS VM integration check is available separately:
+
+```console
+nix build .#vm-integration-test --no-link --print-build-logs
+```
+
+XFS project-quota acceptance still requires a real host mounted with
+`prjquota`; the VM check does not pretend to validate an XFS environment it
+does not provide.
 
 Downstream host deployment:
 

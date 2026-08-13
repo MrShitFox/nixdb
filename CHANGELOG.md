@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- add a schema-versioned, sanitized runtime manifest and Git-independent
+  read-only operator commands;
+- add `nixdb plan`, strict stable-tag selection, and an explicit database
+  software upgrade guard before test activation;
+- serialize deployment operations and strengthen lock/source/generation
+  recovery plus database-aware rollback warnings;
+- add `doctor`, JSON status/version output, CLI security regression tests,
+  module/secret evaluation coverage, ShellCheck, and a NixOS VM test;
+- align version-update and safe-operations documentation with the implemented
+  pinning model.
+
 ## v0.2.0 — first public release
 
 - reusable `services.nixdb` NixOS module API;

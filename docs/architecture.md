@@ -12,7 +12,7 @@ versions/                     declared database component versions
 lib/                          small evaluation helpers
 examples/                     fake, non-production configurations
 templates/                    downstream host skeleton
-tests/                        evaluation and secret-sanity checks
+tests/                        CLI, module, secret, and NixOS VM checks
 docs/                         detailed documentation
 ```
 
@@ -49,3 +49,41 @@ A downstream host repository owns:
 - its own `flake.lock`, including the exact nixdb release revision.
 
 No host output is exported from the public nixdb flake.
+
+## Operator boundary
+
+The module renders evaluated state instead of making the CLI parse downstream
+Nix files:
+
+```text
+services.nixdb options
+        |
+        +-- /etc/nixdb/manifest.json             sanitized, mode 0444
+        +-- /etc/nixdb/health-credentials.json   auth probes, mode 0400
+        +-- /etc/nixdb/operator.json             runtime paths/settings
+```
+
+Manifest schema 1 carries framework identity, declared engine/bundle versions,
+slice limits, operator hints, and normalized instances. Engine-specific code
+may add sanitized cache or diagnostic metadata through the normalized record;
+credentials are registered through a separate internal health context and can
+never enter the manifest. Evaluation tests enforce this with a distinctive
+fixture secret.
+
+This boundary makes read-only CLI behavior independent of Git and the physical
+layout of the downstream host files. Only deployment transactions inspect Git,
+because exact source/lock restoration is part of their safety model.
+
+## Deployment safety model
+
+Planning evaluates a targeted nixdb input inside a temporary archived copy of
+the clean downstream tree. The host lock is not changed until current and
+candidate database versions have been compared. Update, deploy, and rollback
+share an advisory `flock`; successful deployments record non-secret generation
+and DB-version metadata under `/var/lib/nixdb`.
+
+The DB upgrade guard prevents implicit binary changes from reaching
+`nixos-rebuild test`. This protects against accidentally starting a new daemon
+on an old data directory, but it is not a migration planner, backup system, or
+proof that an explicitly accepted upgrade is safe. NixOS rollback similarly
+cannot undo database writes or file-format changes.
