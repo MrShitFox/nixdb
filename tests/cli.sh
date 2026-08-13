@@ -202,7 +202,7 @@ test_redis_cli_uses_portable_connection_options() (
   engine_program_path() { return 1; }
   redis-cli() {
     printf '%s\n' "$*" >"$test_root/redis-cli-args"
-    printf 'PONG\n'
+    printf 'PONG\r\n'
   }
   [[ $(redis_cli_command redis-example PING) == PONG ]]
   grep -F -- '-h 127.0.0.1 -p 6379' "$test_root/redis-cli-args" >/dev/null

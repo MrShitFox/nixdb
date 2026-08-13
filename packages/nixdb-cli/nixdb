@@ -1101,9 +1101,9 @@ redis_cli_command() {
     redis_cli=$(command -v redis-cli) || die "redis-cli is unavailable"
   fi
   if [[ $(jq -r '.authenticated // true' <<<"$credential") == true ]]; then
-    REDISCLI_AUTH="$password" "$redis_cli" "${args[@]}" --user "$user" "$@"
+    REDISCLI_AUTH="$password" "$redis_cli" "${args[@]}" --user "$user" "$@" | tr -d '\r'
   else
-    "$redis_cli" "${args[@]}" "$@"
+    "$redis_cli" "${args[@]}" "$@" | tr -d '\r'
   fi
 }
 
@@ -1133,7 +1133,7 @@ redis_cli_unauthenticated() {
   else
     redis_cli=$(command -v redis-cli) || die "redis-cli is unavailable"
   fi
-  "$redis_cli" "${args[@]}" "$@"
+  "$redis_cli" "${args[@]}" "$@" | tr -d '\r'
 }
 
 redis_config_value() {
@@ -1382,7 +1382,7 @@ check_redis_auth() {
     if [[ -n "$expected_fsync" ]]; then
       [[ $(redis_config_value "$name" appendfsync) == "$expected_fsync" ]] \
         || die "$name appendfsync is not effective"
-      info=$(redis_cli_command "$name" INFO persistence)
+      info=$(redis_cli_command "$name" INFO persistence | tr -d '\r')
       grep -Fxq 'aof_enabled:1' <<<"$info" || die "$name INFO persistence does not report AOF enabled"
     fi
     expected_rdb=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.rdb.enable')
@@ -1396,7 +1396,7 @@ check_redis_auth() {
       expected_rdb_checksum=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.rdb.checksum | if . then "yes" else "no" end')
       [[ $(redis_config_value "$name" rdbchecksum) == "$expected_rdb_checksum" ]] \
         || die "$name RDB checksum is not effective"
-      info=$(redis_cli_command "$name" INFO persistence)
+      info=$(redis_cli_command "$name" INFO persistence | tr -d '\r')
       grep -Eq '^rdb_bgsave_in_progress:[01]$' <<<"$info" \
         || die "$name INFO persistence has no valid RDB state"
     fi
