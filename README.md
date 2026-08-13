@@ -32,7 +32,7 @@ before adopting it.
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixdb.url = "github:MrShitFox/nixdb/v0.2.0";
+    nixdb.url = "github:MrShitFox/nixdb/v0.2.1";
   };
 
   outputs = { nixpkgs, nixdb, ... }: {
@@ -181,10 +181,10 @@ sudo nixdb logs mongo-example
 sudo nixdb restart mongo-example
 sudo nixdb plan
 sudo nixdb plan --main
-sudo nixdb plan v0.2.0
+sudo nixdb plan v0.2.1
 sudo nixdb update
 sudo nixdb update --main
-sudo nixdb deploy v0.2.0
+sudo nixdb deploy v0.2.1
 sudo nixdb rollback
 ```
 

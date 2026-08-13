@@ -67,7 +67,7 @@ require Git because their transaction restores exact downstream source state.
 nixdb plan             # newest stable release
 nixdb plan --latest    # same selection, explicitly
 nixdb plan --main      # public development branch
-nixdb plan v0.2.0      # exact tag or revision
+nixdb plan v0.2.1      # exact tag or revision
 ```
 
 Planning requires a clean downstream checkout but does not mutate it. nixdb
@@ -85,7 +85,7 @@ They can be requested only as explicit deployment refs.
 
 ```console
 sudo nixdb update             # newest stable v* tag
-sudo nixdb deploy v0.2.0      # exact public tag/ref
+sudo nixdb deploy v0.2.1      # exact public tag/ref
 sudo nixdb update --main      # explicit development opt-in
 ```
 
