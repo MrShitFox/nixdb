@@ -15,6 +15,7 @@
   jq,
   nix,
   openssh,
+  redis,
   systemd,
   util-linux,
   xfsprogs,
@@ -37,6 +38,7 @@ writeShellApplication {
     jq
     nix
     openssh
+    redis
     systemd
     util-linux
     xfsprogs

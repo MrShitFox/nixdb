@@ -75,7 +75,9 @@
         }:
         let
           dbPackages = mkPackageSet pkgs.stdenv.hostPlatform.system;
-          nixdbCli = pkgs.callPackage ./packages/nixdb-cli { };
+          nixdbCli = pkgs.callPackage ./packages/nixdb-cli {
+            redis = dbPackages.redis;
+          };
         in
         {
           imports = [ ./modules/nixdb ];
@@ -105,9 +107,9 @@
         in
         dbPackages
         // {
-          default = pkgs.callPackage ./packages/nixdb-cli { };
-          nixdb = pkgs.callPackage ./packages/nixdb-cli { };
-          nixdb-cli = pkgs.callPackage ./packages/nixdb-cli { };
+          default = pkgs.callPackage ./packages/nixdb-cli { redis = dbPackages.redis; };
+          nixdb = pkgs.callPackage ./packages/nixdb-cli { redis = dbPackages.redis; };
+          nixdb-cli = pkgs.callPackage ./packages/nixdb-cli { redis = dbPackages.redis; };
           manticoreDeployed = dbPackages.manticore;
           redisDeployed = dbPackages.redis;
           dragonflyDeployed = dbPackages.dragonfly;

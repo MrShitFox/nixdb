@@ -381,8 +381,23 @@ runtime_manticore_version() {
   fi
 }
 
+engine_program_path() {
+  local engine=$1 binary=$2 service command path
+  service=$(instances_json | jq -r --arg engine "$engine" \
+    'first(.[] | select(.engine == $engine) | .serviceName) // empty')
+  [[ -n "$service" ]] || return 1
+  command=$(systemctl show "$service" -p ExecStart --value 2>/dev/null || true)
+  path=$(sed -n "s#.*path=\\([^ ;]*/bin/${binary}\\) ;.*#\\1#p" <<<"$command" | head -n 1)
+  [[ -x "$path" ]] || return 1
+  printf '%s\n' "$path"
+}
+
 runtime_redis_version() {
-  if command -v redis-server >/dev/null 2>&1; then
+  local server
+  server=$(engine_program_path redis redis-server || true)
+  if [[ -n "$server" ]]; then
+    "$server" --version 2>/dev/null | sed -n 's/.*v=\([^ ]*\).*/\1/p' | head -n 1
+  elif command -v redis-server >/dev/null 2>&1; then
     redis-server --version 2>/dev/null | sed -n 's/.*v=\([^ ]*\).*/\1/p' | head -n 1
   else
     echo unavailable
@@ -390,7 +405,14 @@ runtime_redis_version() {
 }
 
 runtime_dragonfly_version() {
-  if command -v dragonfly >/dev/null 2>&1; then
+  local dragonfly
+  dragonfly=$(engine_program_path dragonfly dragonfly || true)
+  if [[ -n "$dragonfly" ]]; then
+    "$dragonfly" --version 2>&1 \
+      | sed -r 's/\x1B\[[0-9;]*[mK]//g' \
+      | sed -n 's/.*v\([0-9][^ -]*\).*/\1/p' \
+      | head -n 1
+  elif command -v dragonfly >/dev/null 2>&1; then
     dragonfly --version 2>&1 \
       | sed -r 's/\x1B\[[0-9;]*[mK]//g' \
       | sed -n 's/.*v\([0-9][^ -]*\).*/\1/p' \
@@ -1029,7 +1051,7 @@ probe_manticore_ready() {
 }
 
 redis_cli_command() {
-  local name=$1 credential host port plain_port socket user password tls_enabled ca cert key
+  local name=$1 credential host port plain_port socket user password tls_enabled ca cert key redis_cli server
   shift
   credential=$(credential_for "$name")
   host=$(probe_host "$(jq -r .address <<<"$credential")")
@@ -1055,15 +1077,21 @@ redis_cli_command() {
   else
     die "$name Redis-compatible health probe has neither TCP nor Unix socket"
   fi
-  if [[ $(jq -r '.authenticated // true' <<<"$credential") == true ]]; then
-    REDISCLI_AUTH="$password" redis-cli "${args[@]}" --user "$user" "$@"
+  server=$(engine_program_path redis redis-server || true)
+  if [[ -n "$server" && -x "${server%/redis-server}/redis-cli" ]]; then
+    redis_cli="${server%/redis-server}/redis-cli"
   else
-    redis-cli "${args[@]}" "$@"
+    redis_cli=$(command -v redis-cli) || die "redis-cli is unavailable"
+  fi
+  if [[ $(jq -r '.authenticated // true' <<<"$credential") == true ]]; then
+    REDISCLI_AUTH="$password" "$redis_cli" "${args[@]}" --user "$user" "$@"
+  else
+    "$redis_cli" "${args[@]}" "$@"
   fi
 }
 
 redis_cli_unauthenticated() {
-  local name=$1 credential host port plain_port socket tls_enabled ca
+  local name=$1 credential host port plain_port socket tls_enabled ca redis_cli server
   credential=$(credential_for "$name")
   host=$(probe_host "$(jq -r .address <<<"$credential")")
   port=$(jq -r '.ports.tls // empty' <<<"$credential")
@@ -1082,7 +1110,13 @@ redis_cli_unauthenticated() {
   else
     die "$name Redis-compatible unauthenticated probe has neither TCP nor Unix socket"
   fi
-  redis-cli "${args[@]}" "$@"
+  server=$(engine_program_path redis redis-server || true)
+  if [[ -n "$server" && -x "${server%/redis-server}/redis-cli" ]]; then
+    redis_cli="${server%/redis-server}/redis-cli"
+  else
+    redis_cli=$(command -v redis-cli) || die "redis-cli is unavailable"
+  fi
+  "$redis_cli" "${args[@]}" "$@"
 }
 
 redis_config_value() {

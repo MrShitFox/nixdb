@@ -171,6 +171,29 @@ test_in_memory_engine_operator_output() (
 test_in_memory_engine_operator_output || fail 'Redis and Dragonfly version/config output is incomplete or leaks secrets'
 pass 'Redis and Dragonfly participate in versions and sanitized config output'
 
+test_in_memory_runtime_versions_use_managed_services() (
+  source_cli "$manifest" "$test_root/non-git"
+  mkdir -p "$test_root/pinned-redis/bin" "$test_root/pinned-dragonfly/bin"
+  printf '#!/usr/bin/env bash\nprintf "Redis server v=8.10.0 sha=fixture\\n"\n' \
+    >"$test_root/pinned-redis/bin/redis-server"
+  printf '#!/usr/bin/env bash\nprintf "dragonfly v1.40.1\\n"\n' \
+    >"$test_root/pinned-dragonfly/bin/dragonfly"
+  chmod +x "$test_root/pinned-redis/bin/redis-server" "$test_root/pinned-dragonfly/bin/dragonfly"
+  systemctl() {
+    [[ $1 == show && $3 == -p && $4 == ExecStart && $5 == --value ]] || return 1
+    case "$2" in
+      redis-example) printf '{ path=%s ; argv[]=fixture }\n' "$test_root/pinned-redis/bin/redis-server" ;;
+      dragonfly-example) printf '{ path=%s ; argv[]=fixture }\n' "$test_root/pinned-dragonfly/bin/dragonfly" ;;
+      *) return 1 ;;
+    esac
+  }
+  [[ $(runtime_redis_version) == 8.10.0 ]]
+  [[ $(runtime_dragonfly_version) == 1.40.1 ]]
+)
+test_in_memory_runtime_versions_use_managed_services \
+  || fail 'in-memory engine runtime versions do not use their managed services'
+pass 'Redis and Dragonfly runtime versions use their managed service binaries'
+
 test_missing_manifest() (
   source_cli "$test_root/absent.json" "$test_root/non-git"
   manifest_json
