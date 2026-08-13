@@ -530,7 +530,7 @@ credential_for() {
 }
 
 check_units_and_ports() {
-  local data service address port listener failed
+  local data service address port failed
   data=$(instances_json)
   while read -r service; do
     systemctl is-active --quiet "$service.service" || die "$service.service is not active"
@@ -539,14 +539,40 @@ check_units_and_ports() {
   failed=$(systemctl --failed --no-legend --plain | wc -l)
   ((failed == 0)) || die "$failed failed systemd units"
   while IFS=$'\t' read -r address port; do
-    listener=$(ss -H -lnt "sport = :$port")
-    if [[ "$address" == *:* ]]; then
-      grep -Fq "[$address]:$port" <<<"$listener" || die "tcp/$port is not listening on $address"
-    else
-      grep -Fq "$address:$port" <<<"$listener" || die "tcp/$port is not listening on $address"
-    fi
+    listener_is_ready "$address" "$port" || die "tcp/$port is not listening on $address"
   done < <(jq -r '.[] | .listeners[] | [.address, (.port|tostring)] | @tsv' <<<"$data")
   echo '  units/listeners: PASS'
+}
+
+listener_is_ready() {
+  local address=$1 port=$2 listener
+  listener=$(ss -H -lnt "sport = :$port")
+  if [[ "$address" == *:* ]]; then
+    grep -Fq "[$address]:$port" <<<"$listener"
+  else
+    grep -Fq "$address:$port" <<<"$listener"
+  fi
+}
+
+wait_instance_listeners() {
+  local name=$1 address port ready attempt
+  for ((attempt = 1; attempt <= 120; attempt++)); do
+    ready=true
+    while IFS=$'\t' read -r address port; do
+      if ! listener_is_ready "$address" "$port"; then
+        ready=false
+        break
+      fi
+    done < <(
+      instances_json \
+        | jq -r --arg name "$name" '.[] | select(.name == $name) | .listeners[] | [.address, (.port|tostring)] | @tsv'
+    )
+    [[ "$ready" == true ]] && return
+    systemctl is-failed --quiet "$name.service" \
+      && die "$name.service failed while waiting for its listeners"
+    sleep 0.5
+  done
+  die "$name.service did not open its configured listeners within 60 seconds"
 }
 
 check_filesystems_and_quotas() {
@@ -701,6 +727,7 @@ cmd_restart() {
   validate_instance "$1"
   echo "Restarting $1.service"
   systemctl restart "$1.service"
+  wait_instance_listeners "$1"
   systemctl is-active --quiet "$1.service" || die "$1.service did not become active"
   run_health
 }

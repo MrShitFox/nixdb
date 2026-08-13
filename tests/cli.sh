@@ -188,6 +188,29 @@ if test_unknown_instance >/dev/null 2>&1; then
 fi
 pass 'unknown but syntactically valid instance is rejected'
 
+listener_attempts="$test_root/listener-attempts"
+printf '0\n' >"$listener_attempts"
+test_restart_readiness_wait() (
+  source_cli "$manifest" "$test_root/non-git"
+  ss() {
+    local count
+    count=$(cat "$listener_attempts")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$listener_attempts"
+    if ((count >= 2)); then
+      printf 'LISTEN 0 128 127.0.0.1:27017 0.0.0.0:*\n'
+    fi
+  }
+  systemctl() {
+    [[ $1 != is-failed ]]
+  }
+  sleep() { :; }
+  wait_instance_listeners mongo-example
+)
+test_restart_readiness_wait || fail 'restart readiness wait did not tolerate a delayed listener'
+[[ $(cat "$listener_attempts") -ge 2 ]] || fail 'restart readiness fixture did not retry'
+pass 'restart waits for delayed manifest listeners before full health'
+
 test_refs() (
   source_cli "$manifest" "$test_root/non-git"
   validate_ref v0.2.1
