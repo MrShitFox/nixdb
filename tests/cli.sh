@@ -231,6 +231,27 @@ test_dragonfly_info_version_normalization \
   || fail 'Dragonfly INFO version format is not normalized for health'
 pass 'Dragonfly INFO version format is normalized for health'
 
+test_redis_info_and_config_normalization() (
+  source_cli "$manifest" "$test_root/non-git"
+  credential_for() { jq -n '{unixSocket:null}'; }
+  redis_cli_command() {
+    local name=$1
+    shift
+    case "$*" in
+      PING) printf 'PONG\n' ;;
+      'INFO server') printf 'redis_version:8.10.0\r\n' ;;
+      '--raw CONFIG GET maxmemory') printf 'maxmemory\n1073741824\r\n' ;;
+      '--raw CONFIG GET maxmemory-policy') printf 'maxmemory-policy\nallkeys-lru\r\n' ;;
+      '--raw MODULE LIST') printf 'bf\r\nsearch\r\nReJSON\r\ntimeseries\r\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  probe_redis_ready redis-example
+)
+test_redis_info_and_config_normalization \
+  || fail 'Redis INFO or CONFIG values retain RESP CRLF in health checks'
+pass 'Redis INFO and CONFIG values are normalized for health'
+
 test_missing_manifest() (
   source_cli "$test_root/absent.json" "$test_root/non-git"
   manifest_json
