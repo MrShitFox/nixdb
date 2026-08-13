@@ -1,15 +1,15 @@
 # Changelog
 
-## Unreleased
-
-### v0.2.3 candidate
-
-#### Fixed
+## v0.2.3 - 2026-08-13
 
 - manual rollback now consumes deployment-state schema v2 correctly;
 - the exact recorded previous nixdb generation wins over unrelated intermediate
   NixOS generations;
-- legacy schema compatibility and fallback diagnostics are improved;
+- schema-v1 deployment-state compatibility is retained;
+- malformed, future-schema, stale, or incomplete deployment state is not
+  trusted as an exact rollback target;
+- compatibility fallback diagnostics are explicit;
+- rollback regression coverage is expanded;
 - README and operator documentation are synchronized with the current CLI.
 
 ## v0.2.2 - 2026-08-13
