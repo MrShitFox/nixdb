@@ -186,6 +186,27 @@ if test_git_required >/dev/null 2>&1; then
 fi
 pass 'deployment commands require Git while read-only commands do not'
 
+mock_bin="$test_root/mock-bin"
+mkdir -p "$mock_bin"
+cat >"$mock_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$SUDO_CAPTURE"
+EOF
+chmod +x "$mock_bin/sudo"
+sudo_capture="$test_root/sudo-args"
+test_privilege_boundary() (
+  source_cli "$manifest" "$test_root/non-git"
+  export SUDO_CAPTURE="$sudo_capture"
+  export NIXDB_CONFIG_ROOT="$test_root/attacker-controlled"
+  PATH="$mock_bin:$PATH"
+  need_root health
+)
+test_privilege_boundary
+if grep -F -- '--preserve-env' "$sudo_capture" >/dev/null; then
+  fail 'self-elevation preserved attacker-controlled NIXDB overrides'
+fi
+pass 'self-elevation drops unprivileged NIXDB environment overrides'
+
 plan_repo="$test_root/plan-repo"
 make_repo "$plan_repo"
 candidate_manifest_file="$test_root/candidate-manifest.json"

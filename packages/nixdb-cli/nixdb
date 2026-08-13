@@ -61,7 +61,9 @@ warn() {
 
 need_root() {
   if (( EUID != 0 )); then
-    exec sudo --preserve-env=NIXDB_OPERATOR_CONFIG,NIXDB_CONFIG_ROOT,NIXDB_HOST,NIXDB_CONFIG_HINT,NIXDB_INPUT_NAME,NIXDB_INPUT_URL,NIXDB_RELEASE_REPOSITORY,NIXDB_MANIFEST,NIXDB_HEALTH_CREDENTIALS,NIXDB_STATE_DIR,NIXDB_DEPLOY_LOCK,NIXDB_SYSTEM_PROFILE,NIXDB_CURRENT_SYSTEM -- "$0" "$@"
+    # Do not carry test/operator path overrides across the privilege boundary.
+    # The elevated process must rediscover its declarative root-owned config.
+    exec sudo -- "$0" "$@"
   fi
 }
 
@@ -716,7 +718,7 @@ resolve_plan_target() {
   local requested=${1:---latest}
   case "$requested" in
     --latest)
-      plan_ref=$(latest_stable_tag)
+      plan_ref=$(latest_stable_tag || true)
       [[ -n "$plan_ref" ]] || die 'no stable vMAJOR.MINOR.PATCH tags found'
       plan_label=$plan_ref
       ;;
