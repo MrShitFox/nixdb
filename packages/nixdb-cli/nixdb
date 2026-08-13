@@ -1067,11 +1067,11 @@ redis_cli_command() {
   local -a args=(--no-auth-warning)
   if [[ "$tls_enabled" == true ]]; then
     [[ -n "$port" ]] || die "$name TLS health probe has no TLS port"
-    args+=(--host "$host" --port "$port" --tls --cacert "$ca")
+    args+=(-h "$host" -p "$port" --tls --cacert "$ca")
     [[ -z "$cert" ]] || args+=(--cert "$cert")
     [[ -z "$key" ]] || args+=(--key "$key")
   elif [[ -n "$plain_port" ]]; then
-    args+=(--host "$host" --port "$plain_port")
+    args+=(-h "$host" -p "$plain_port")
   elif [[ -n "$socket" ]]; then
     args+=(-s "$socket")
   else
@@ -1102,9 +1102,9 @@ redis_cli_unauthenticated() {
   local -a args=(--no-auth-warning)
   if [[ "$tls_enabled" == true ]]; then
     [[ -n "$port" ]] || die "$name TLS health probe has no TLS port"
-    args+=(--host "$host" --port "$port" --tls --cacert "$ca")
+    args+=(-h "$host" -p "$port" --tls --cacert "$ca")
   elif [[ -n "$plain_port" ]]; then
-    args+=(--host "$host" --port "$plain_port")
+    args+=(-h "$host" -p "$plain_port")
   elif [[ -n "$socket" ]]; then
     args+=(-s "$socket")
   else

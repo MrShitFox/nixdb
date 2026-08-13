@@ -194,6 +194,25 @@ test_in_memory_runtime_versions_use_managed_services \
   || fail 'in-memory engine runtime versions do not use their managed services'
 pass 'Redis and Dragonfly runtime versions use their managed service binaries'
 
+test_redis_cli_uses_portable_connection_options() (
+  source_cli "$manifest" "$test_root/non-git"
+  credential_for() {
+    jq -n '{address:"127.0.0.1",ports:{redis:6379},unixSocket:null,username:"admin",password:"fixture",authenticated:true,tls:{enable:false}}'
+  }
+  engine_program_path() { return 1; }
+  redis-cli() {
+    printf '%s\n' "$*" >"$test_root/redis-cli-args"
+    printf 'PONG\n'
+  }
+  [[ $(redis_cli_command redis-example PING) == PONG ]]
+  grep -F -- '-h 127.0.0.1 -p 6379' "$test_root/redis-cli-args" >/dev/null
+  ! grep -F -- '--host' "$test_root/redis-cli-args" >/dev/null
+  ! grep -F -- '--port' "$test_root/redis-cli-args" >/dev/null
+)
+test_redis_cli_uses_portable_connection_options \
+  || fail 'Redis-compatible health adapter uses unsupported redis-cli connection options'
+pass 'Redis-compatible health adapter uses portable redis-cli options'
+
 test_missing_manifest() (
   source_cli "$test_root/absent.json" "$test_root/non-git"
   manifest_json
