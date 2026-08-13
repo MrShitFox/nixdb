@@ -381,6 +381,25 @@ runtime_manticore_version() {
   fi
 }
 
+runtime_redis_version() {
+  if command -v redis-server >/dev/null 2>&1; then
+    redis-server --version 2>/dev/null | sed -n 's/.*v=\([^ ]*\).*/\1/p' | head -n 1
+  else
+    echo unavailable
+  fi
+}
+
+runtime_dragonfly_version() {
+  if command -v dragonfly >/dev/null 2>&1; then
+    dragonfly --version 2>&1 \
+      | sed -r 's/\x1B\[[0-9;]*[mK]//g' \
+      | sed -n 's/.*v\([0-9][^ -]*\).*/\1/p' \
+      | head -n 1
+  else
+    echo unavailable
+  fi
+}
+
 buddy_runtime_version() {
   local service
   service=$(instances_json | jq -r '[.[] | select(.engine == "manticore")][0].serviceName // empty')
@@ -615,7 +634,7 @@ EOF
 
 cmd_status() {
   local output=${1:-text} manifest source latest input deployment_record deployment failed services
-  local configured_description locked_revision resolved_description
+  local configured_description locked_revision resolved_description redis_count dragonfly_count
   [[ "$output" == text || "$output" == --json ]] || die "usage: nixdb status [--json]"
   manifest=$(manifest_json)
   source=$(source_checkout_json)
@@ -627,6 +646,8 @@ cmd_status() {
   resolved_description=$(resolved_release_description "$input")
   deployment_record=$(deployment_state_json)
   deployment=$(deployment_description "$manifest" "$input" "$source" "$deployment_record")
+  redis_count=$(jq '[.instances[] | select(.engine == "redis")] | length' <<<"$manifest")
+  dragonfly_count=$(jq '[.instances[] | select(.engine == "dragonfly")] | length' <<<"$manifest")
   failed=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
   services=$(while read -r service; do
     jq -cn --arg name "$service" --arg state "$(systemctl is-active "$service.service" 2>/dev/null || true)" \
@@ -681,6 +702,8 @@ Database engines
   MongoDB:               $(runtime_mongodb_version)
   MySQL:                 $(runtime_mysql_version)
   Manticore Search:      $(runtime_manticore_version)
+  Redis:                 $(runtime_redis_version) ($redis_count instances)
+  Dragonfly:             $(runtime_dragonfly_version) ($dragonfly_count instances)
 
 Managed services
 EOF
@@ -696,12 +719,16 @@ versions_json() {
     --arg mongoRuntime "$(runtime_mongodb_version)" \
     --arg mysqlRuntime "$(runtime_mysql_version)" \
     --arg manticoreRuntime "$(runtime_manticore_version)" \
+    --arg redisRuntime "$(runtime_redis_version)" \
+    --arg dragonflyRuntime "$(runtime_dragonfly_version)" \
     --arg buddyRuntime "$buddy" \
     --argjson versions "$(jq -c .versions <<<"$manifest")" \
     '{nixos:{runtime:$nixos},mongodb:{declared:$versions.mongodb,runtime:$mongoRuntime},
       mysql:{declared:$versions.mysql,runtime:$mysqlRuntime},
       manticore:{declared:$versions.manticore,runtime:$manticoreRuntime,
-        components:$versions.manticoreComponents,buddyRuntime:$buddyRuntime}}'
+        components:$versions.manticoreComponents,buddyRuntime:$buddyRuntime},
+      redis:{declared:$versions.redis,runtime:$redisRuntime},
+      dragonfly:{declared:$versions.dragonfly,runtime:$dragonflyRuntime}}'
 }
 
 cmd_versions() {
@@ -717,6 +744,8 @@ cmd_versions() {
   printf '%-24s %-34s %s\n' MongoDB "$(jq -r .mongodb.declared <<<"$data")" "$(jq -r .mongodb.runtime <<<"$data")"
   printf '%-24s %-34s %s\n' MySQL "$(jq -r .mysql.declared <<<"$data")" "$(jq -r .mysql.runtime <<<"$data")"
   printf '%-24s %-34s %s\n' 'Manticore Search' "$(jq -r .manticore.declared <<<"$data")" "$(jq -r .manticore.runtime <<<"$data")"
+  printf '%-24s %-34s %s\n' 'Redis Open Source' "$(jq -r .redis.declared <<<"$data")" "$(jq -r .redis.runtime <<<"$data")"
+  printf '%-24s %-34s %s\n' Dragonfly "$(jq -r .dragonfly.declared <<<"$data")" "$(jq -r .dragonfly.runtime <<<"$data")"
   printf '%-24s %-34s %s\n' 'Manticore Buddy' "$(jq -r .manticore.components.buddy <<<"$data")" "$(jq -r .manticore.buddyRuntime <<<"$data")"
   for component in columnar secondary knn embeddings executor backup load tzdata galera; do
     printf '%-24s %-34s %s\n' "Manticore $component" \
@@ -743,7 +772,7 @@ human_systemd_value() {
 }
 
 cmd_resources() {
-  local current high max swap cpu_quota allowed service
+  local current high max swap cpu_quota allowed service engine_memory
   manifest_json >/dev/null
   echo database.slice
   current=$(systemctl show database.slice -p MemoryCurrent --value)
@@ -757,17 +786,18 @@ cmd_resources() {
     "$(human_systemd_value "$max")" "$(human_systemd_value "$swap")" \
     "$cpu_quota" "${allowed:-all}"
   echo
-  printf '%-22s %8s %12s %12s %12s %12s %s\n' \
-    Service CPUWeight Current High Max SwapMax CPUQuota
+  printf '%-22s %8s %12s %12s %12s %12s %12s %s\n' \
+    Service CPUWeight EngineMax Current High Max SwapMax CPUQuota
   while read -r service; do
     current=$(systemctl show "$service.service" -p MemoryCurrent --value)
     high=$(systemctl show "$service.service" -p MemoryHigh --value)
     max=$(systemctl show "$service.service" -p MemoryMax --value)
     swap=$(systemctl show "$service.service" -p MemorySwapMax --value)
     cpu_quota=$(systemctl show "$service.service" -p CPUQuotaPerSecUSec --value)
-    printf '%-22s %8s %12s %12s %12s %12s %s\n' \
+    engine_memory=$(instances_json | jq -r --arg name "$service" '.[] | select(.serviceName == $name) | .engineMemoryLimit // "-"')
+    printf '%-22s %8s %12s %12s %12s %12s %12s %s\n' \
       "$service" "$(systemctl show "$service.service" -p CPUWeight --value)" \
-      "$(human_systemd_value "$current")" "$(human_systemd_value "$high")" \
+      "$engine_memory" "$(human_systemd_value "$current")" "$(human_systemd_value "$high")" \
       "$(human_systemd_value "$max")" "$(human_systemd_value "$swap")" "$cpu_quota"
   done < <(service_names)
 }
@@ -784,13 +814,25 @@ runtime manifest or CLI output.
 
 EOF
   {
-    printf 'Instance\tEngine\tPorts\tData directory\tMount\tProject\tQuota\tCPU\tMemoryHigh\tMemoryMax\tCache/buffer\n'
+    printf 'Instance\tEngine\tPorts\tData directory\tMount\tProject\tQuota\tCPU\tEngine max\tMemoryHigh\tMemoryMax\tCache/buffer\n'
     jq -r '.instances[] | [
       .name,.engine,(.ports|map(tostring)|join(",")),.dataDir,.mountPoint,
-      (.projectId|tostring),.diskLimit,(.cpuWeight|tostring),.memoryHigh,.memoryMax,
+      (.projectId|tostring),.diskLimit,(.cpuWeight|tostring),(.engineMemoryLimit // "-"),.memoryHigh,.memoryMax,
       (if .internalCache == null then "-" else (.internalCache.value + " " + .internalCache.kind) end)
     ] | @tsv' <<<"$data"
   } | column -t -s $'\t'
+  if jq -e '.instances[] | select(.engine == "redis")' <<<"$data" >/dev/null; then
+    echo
+    echo 'Redis instances'
+    jq -r '.instances[] | select(.engine == "redis") |
+      "  \(.name): endpoint=\(if (.listeners | length) == 0 then "socket-only" else (.listeners | map(.address + ":" + (.port|tostring)) | join(",")) end) socket=\(.engineMetadata.unixSocket // "-") dataDir=\(.dataDir) maxmemory=\(.engineMetadata.maxMemory) policy=\(.engineMetadata.maxMemoryPolicy) persistence=\(.engineMetadata.persistence) appendfsync=\(.engineMetadata.appendFsync // "-") quota=\(.diskLimit) cgroup=\(.memoryHigh)/\(.memoryMax)"' <<<"$data"
+  fi
+  if jq -e '.instances[] | select(.engine == "dragonfly")' <<<"$data" >/dev/null; then
+    echo
+    echo 'Dragonfly instances'
+    jq -r '.instances[] | select(.engine == "dragonfly") |
+      "  \(.name): endpoint=\(.listeners | map(.address + ":" + (.port|tostring)) | join(",")) dataDir=\(.dataDir) maxmemory=\(.engineMetadata.maxMemory) threads=\(.engineMetadata.proactorThreads) cacheMode=\(.engineMetadata.cacheMode) snapshot=\(.engineMetadata.snapshot.dbFilename // "-") snapshotCron=\(.engineMetadata.snapshot.snapshotCron // "-") tiering=\(.engineMetadata.tiering.enable) quota=\(.diskLimit) cgroup=\(.memoryHigh)/\(.memoryMax)"' <<<"$data"
+  fi
   cat <<'EOF'
 
 Edit the downstream host configuration, commit it, and then run `nixdb plan`
@@ -986,6 +1028,124 @@ probe_manticore_ready() {
   }
 }
 
+redis_cli_command() {
+  local name=$1 credential host port plain_port socket user password tls_enabled ca cert key
+  shift
+  credential=$(credential_for "$name")
+  host=$(probe_host "$(jq -r .address <<<"$credential")")
+  port=$(jq -r '.ports.tls // empty' <<<"$credential")
+  plain_port=$(jq -r '.ports.redis // empty' <<<"$credential")
+  socket=$(jq -r '.unixSocket // empty' <<<"$credential")
+  user=$(jq -r .username <<<"$credential")
+  password=$(jq -r .password <<<"$credential")
+  tls_enabled=$(jq -r '.tls.enable // false' <<<"$credential")
+  ca=$(jq -r '.tls.caFile // empty' <<<"$credential")
+  cert=$(jq -r '.tls.clientCertFile // empty' <<<"$credential")
+  key=$(jq -r '.tls.clientKeyFile // empty' <<<"$credential")
+  local -a args=(--no-auth-warning)
+  if [[ "$tls_enabled" == true ]]; then
+    [[ -n "$port" ]] || die "$name TLS health probe has no TLS port"
+    args+=(--host "$host" --port "$port" --tls --cacert "$ca")
+    [[ -z "$cert" ]] || args+=(--cert "$cert")
+    [[ -z "$key" ]] || args+=(--key "$key")
+  elif [[ -n "$plain_port" ]]; then
+    args+=(--host "$host" --port "$plain_port")
+  elif [[ -n "$socket" ]]; then
+    args+=(-s "$socket")
+  else
+    die "$name Redis-compatible health probe has neither TCP nor Unix socket"
+  fi
+  if [[ $(jq -r '.authenticated // true' <<<"$credential") == true ]]; then
+    REDISCLI_AUTH="$password" redis-cli "${args[@]}" --user "$user" "$@"
+  else
+    redis-cli "${args[@]}" "$@"
+  fi
+}
+
+redis_cli_unauthenticated() {
+  local name=$1 credential host port plain_port socket tls_enabled ca
+  credential=$(credential_for "$name")
+  host=$(probe_host "$(jq -r .address <<<"$credential")")
+  port=$(jq -r '.ports.tls // empty' <<<"$credential")
+  plain_port=$(jq -r '.ports.redis // empty' <<<"$credential")
+  socket=$(jq -r '.unixSocket // empty' <<<"$credential")
+  tls_enabled=$(jq -r '.tls.enable // false' <<<"$credential")
+  ca=$(jq -r '.tls.caFile // empty' <<<"$credential")
+  local -a args=(--no-auth-warning)
+  if [[ "$tls_enabled" == true ]]; then
+    [[ -n "$port" ]] || die "$name TLS health probe has no TLS port"
+    args+=(--host "$host" --port "$port" --tls --cacert "$ca")
+  elif [[ -n "$plain_port" ]]; then
+    args+=(--host "$host" --port "$plain_port")
+  elif [[ -n "$socket" ]]; then
+    args+=(-s "$socket")
+  else
+    die "$name Redis-compatible unauthenticated probe has neither TCP nor Unix socket"
+  fi
+  redis-cli "${args[@]}" "$@"
+}
+
+redis_config_value() {
+  local name=$1 setting=$2 result
+  result=$(redis_cli_command "$name" --raw CONFIG GET "$setting") || return
+  sed -n '2p' <<<"$result"
+}
+
+probe_redis_ready() {
+  local name=$1 expected version policy maxmemory modules module result socket
+  expected=$(manifest_json | jq -r .versions.redis)
+  socket=$(credential_for "$name" | jq -r '.unixSocket // empty')
+  [[ -z "$socket" || -S "$socket" ]] || {
+    echo "Redis Unix socket is absent: $socket" >&2
+    return 1
+  }
+  [[ $(redis_cli_command "$name" PING) == PONG ]] || {
+    echo 'authenticated Redis PING did not return PONG' >&2
+    return 1
+  }
+  version=$(redis_cli_command "$name" INFO server | sed -n 's/^redis_version://p' | head -n 1)
+  [[ "$version" == "$expected" ]] || {
+    echo "Redis server version is $version, expected $expected" >&2
+    return 1
+  }
+  maxmemory=$(redis_config_value "$name" maxmemory)
+  [[ "$maxmemory" == "$(size_bytes "$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMemoryLimit')")" ]] || {
+    echo "Redis effective maxmemory differs from manifest: $maxmemory" >&2
+    return 1
+  }
+  policy=$(redis_config_value "$name" maxmemory-policy)
+  [[ "$policy" == "$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.maxMemoryPolicy')" ]] || {
+    echo "Redis effective maxmemory-policy differs from manifest: $policy" >&2
+    return 1
+  }
+  modules=$(redis_cli_command "$name" --raw MODULE LIST)
+  for module in bf search ReJSON timeseries; do
+    grep -Fxq "$module" <<<"$modules" || {
+      echo "Redis MODULE LIST is missing the expected $module module" >&2
+      return 1
+    }
+  done
+}
+
+probe_dragonfly_ready() {
+  local name=$1 expected version maxmemory
+  expected=$(manifest_json | jq -r .versions.dragonfly)
+  [[ $(redis_cli_command "$name" PING) == PONG ]] || {
+    echo 'authenticated Dragonfly PING did not return PONG' >&2
+    return 1
+  }
+  version=$(redis_cli_command "$name" INFO server | sed -n 's/^dragonfly_version://p' | head -n 1)
+  [[ "$version" == "$expected" ]] || {
+    echo "Dragonfly server version is $version, expected $expected" >&2
+    return 1
+  }
+  maxmemory=$(redis_config_value "$name" maxmemory)
+  [[ "$maxmemory" == "$(size_bytes "$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMemoryLimit')")" ]] || {
+    echo "Dragonfly effective maxmemory differs from manifest: $maxmemory" >&2
+    return 1
+  }
+}
+
 instance_readiness_probe() {
   local name=$1 engine
   systemctl is-active --quiet "$name.service" || {
@@ -998,6 +1158,8 @@ instance_readiness_probe() {
     mongodb) probe_mongodb_ready "$name" ;;
     mysql) probe_mysql_ready "$name" ;;
     manticore) probe_manticore_ready "$name" ;;
+    redis) probe_redis_ready "$name" ;;
+    dragonfly) probe_dragonfly_ready "$name" ;;
     *) echo "unsupported engine in runtime manifest: $engine" >&2; return 1 ;;
   esac
 }
@@ -1137,6 +1299,129 @@ check_manticore_auth() {
   health_tmp=""
 }
 
+check_redis_auth() {
+  local row name credential authenticated expected_mode expected_fsync expected_rdb expected_rdb_filename expected_rdb_compression expected_rdb_checksum actual value info key ttl whoami
+  while IFS= read -r row; do
+    name=$(jq -r .name <<<"$row")
+    retry_probe "$name Redis readiness" "$DEFAULT_READY_TIMEOUT" "$READY_RETRY_INTERVAL" \
+      probe_redis_ready "$name" || die "$name Redis readiness failed"
+    credential=$(credential_for "$name")
+    authenticated=$(jq -r '.authenticated // true' <<<"$credential")
+    if [[ "$authenticated" == true ]]; then
+      if [[ $(redis_cli_unauthenticated "$name" PING 2>&1 || true) == PONG ]]; then
+        die "$name accepted unauthenticated Redis PING"
+      fi
+      whoami=$(redis_cli_command "$name" ACL WHOAMI)
+      [[ "$whoami" == "$(jq -r .username <<<"$credential")" ]] || die "$name ACL WHOAMI did not identify the declared admin"
+    fi
+    expected_mode=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.persistence')
+    expected_fsync=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.appendFsync // empty')
+    actual=$(redis_config_value "$name" appendonly)
+    case "$expected_mode" in
+      AOF|AOF+RDB) [[ "$actual" == yes ]] || die "$name appendonly is not effective" ;;
+      *) [[ "$actual" == no ]] || die "$name unexpectedly has AOF enabled" ;;
+    esac
+    if [[ -n "$expected_fsync" ]]; then
+      [[ $(redis_config_value "$name" appendfsync) == "$expected_fsync" ]] \
+        || die "$name appendfsync is not effective"
+      info=$(redis_cli_command "$name" INFO persistence)
+      grep -Fxq 'aof_enabled:1' <<<"$info" || die "$name INFO persistence does not report AOF enabled"
+    fi
+    expected_rdb=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.rdb.enable')
+    if [[ "$expected_rdb" == true ]]; then
+      expected_rdb_filename=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.rdb.dbFilename')
+      [[ $(redis_config_value "$name" dbfilename) == "$expected_rdb_filename" ]] \
+        || die "$name RDB dbfilename is not effective"
+      expected_rdb_compression=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.rdb.compression | if . then "yes" else "no" end')
+      [[ $(redis_config_value "$name" rdbcompression) == "$expected_rdb_compression" ]] \
+        || die "$name RDB compression is not effective"
+      expected_rdb_checksum=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.rdb.checksum | if . then "yes" else "no" end')
+      [[ $(redis_config_value "$name" rdbchecksum) == "$expected_rdb_checksum" ]] \
+        || die "$name RDB checksum is not effective"
+      info=$(redis_cli_command "$name" INFO persistence)
+      grep -Eq '^rdb_bgsave_in_progress:[01]$' <<<"$info" \
+        || die "$name INFO persistence has no valid RDB state"
+    fi
+    key="nixdb:health:redis:${name}:$$"
+    redis_cli_command "$name" SET "$key" healthy EX 2 >/dev/null || die "$name Redis SET smoke failed"
+    value=$(redis_cli_command "$name" GET "$key")
+    [[ "$value" == healthy ]] || die "$name Redis GET smoke failed"
+    ttl=$(redis_cli_command "$name" TTL "$key")
+    [[ "$ttl" =~ ^[1-9][0-9]*$ ]] || die "$name Redis TTL smoke failed"
+    redis_cli_command "$name" DEL "$key" >/dev/null || die "$name Redis DEL cleanup failed"
+    echo "  $name auth/ACL/modules/persistence/SET-GET-TTL: PASS"
+  done < <(instances_json | jq -c '.[] | select(.engine == "redis")')
+}
+
+check_dragonfly_memcached() {
+  local name=$1 credential host port key reply
+  credential=$(credential_for "$name")
+  host=$(probe_host "$(jq -r .address <<<"$credential")")
+  port=$(jq -r .ports.memcached <<<"$credential")
+  key="nixdb_health_${name//-/_}_$$"
+  exec {memcached_fd}<>"/dev/tcp/$host/$port" || return 1
+  printf 'set %s 0 2 7\r\nhealthy\r\nget %s\r\nquit\r\n' "$key" "$key" >&"$memcached_fd"
+  reply=$(cat <&"$memcached_fd")
+  exec {memcached_fd}>&-
+  grep -Fq 'STORED' <<<"$reply" && grep -Fq 'healthy' <<<"$reply"
+}
+
+check_dragonfly_auth() {
+  local row name credential authenticated key value ttl whoami username admin_port admin_host memcached_port cache_mode
+  local tls_enabled admin_plain ca cert client_key scheme
+  local -a curl_args=()
+  while IFS= read -r row; do
+    name=$(jq -r .name <<<"$row")
+    retry_probe "$name Dragonfly readiness" "$DEFAULT_READY_TIMEOUT" "$READY_RETRY_INTERVAL" \
+      probe_dragonfly_ready "$name" || die "$name Dragonfly readiness failed"
+    credential=$(credential_for "$name")
+    authenticated=$(jq -r '.authenticated // true' <<<"$credential")
+    if [[ "$authenticated" == true ]]; then
+      if [[ $(redis_cli_unauthenticated "$name" PING 2>&1 || true) == PONG ]]; then
+        die "$name accepted unauthenticated Dragonfly PING"
+      fi
+      whoami=$(redis_cli_command "$name" ACL WHOAMI)
+      username=$(jq -r .username <<<"$credential")
+      [[ "$whoami" == "$username" || "$whoami" == "User is $username" ]] \
+        || die "$name ACL WHOAMI did not identify the declared admin"
+    fi
+    cache_mode=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.cacheMode')
+    [[ "$cache_mode" == true || "$cache_mode" == false ]] || die "$name Dragonfly cache/store metadata is invalid"
+    key="nixdb:health:dragonfly:${name}:$$"
+    redis_cli_command "$name" SET "$key" healthy EX 2 >/dev/null || die "$name Dragonfly SET smoke failed"
+    value=$(redis_cli_command "$name" GET "$key")
+    [[ "$value" == healthy ]] || die "$name Dragonfly GET smoke failed"
+    ttl=$(redis_cli_command "$name" TTL "$key")
+    [[ "$ttl" =~ ^[1-9][0-9]*$ ]] || die "$name Dragonfly TTL smoke failed"
+    redis_cli_command "$name" DEL "$key" >/dev/null || die "$name Dragonfly DEL cleanup failed"
+    admin_port=$(jq -r '.ports.admin // empty' <<<"$credential")
+    if [[ -n "$admin_port" ]]; then
+      admin_host=$(probe_host "$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.admin.bindAddress')")
+      tls_enabled=$(jq -r '.tls.enable // false' <<<"$credential")
+      admin_plain=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMetadata.tls.allowPlainAdmin // false')
+      ca=$(jq -r '.tls.caFile // empty' <<<"$credential")
+      cert=$(jq -r '.tls.clientCertFile // empty' <<<"$credential")
+      client_key=$(jq -r '.tls.clientKeyFile // empty' <<<"$credential")
+      if [[ "$tls_enabled" == true && "$admin_plain" != true ]]; then
+        scheme=https
+        curl_args=(--cacert "$ca")
+        [[ -z "$cert" ]] || curl_args+=(--cert "$cert")
+        [[ -z "$client_key" ]] || curl_args+=(--key "$client_key")
+      else
+        scheme=http
+        curl_args=()
+      fi
+      curl --fail --silent --show-error "${curl_args[@]}" "$scheme://$admin_host:$admin_port/metrics" >/dev/null \
+        || die "$name Dragonfly HTTP/admin metrics probe failed"
+    fi
+    memcached_port=$(jq -r '.ports.memcached // empty' <<<"$credential")
+    if [[ -n "$memcached_port" ]]; then
+      check_dragonfly_memcached "$name" || die "$name Dragonfly Memcached protocol smoke failed"
+    fi
+    echo "  $name auth/ACL/cache-mode/SET-GET-TTL: PASS"
+  done < <(instances_json | jq -c '.[] | select(.engine == "dragonfly")')
+}
+
 run_health() {
   manifest_json >/dev/null
   credentials_json >/dev/null
@@ -1149,6 +1434,8 @@ run_health() {
   check_mongodb_auth
   check_mysql_auth
   check_manticore_auth
+  check_redis_auth
+  check_dragonfly_auth
   echo 'nixdb health: PASS'
 }
 
@@ -1346,9 +1633,11 @@ prepare_candidate() {
   current_manifest=$(active_version_manifest)
   current_input=$(input_metadata_json_from "$CONFIG_ROOT/flake.lock")
   db_upgrade_detected=false
-  for engine in mongodb mysql manticore; do
-    if [[ $(jq -r --arg engine "$engine" '.versions[$engine]' <<<"$current_manifest") \
-      != $(jq -r --arg engine "$engine" '.versions[$engine]' <<<"$candidate_manifest") ]]; then
+  for engine in mongodb mysql manticore redis dragonfly; do
+    if [[ $(jq -r --arg engine "$engine" '[.instances[] | select(.engine == $engine)] | length > 0' <<<"$current_manifest") == true \
+      || $(jq -r --arg engine "$engine" '[.instances[] | select(.engine == $engine)] | length > 0' <<<"$candidate_manifest") == true ]] \
+      && [[ $(jq -r --arg engine "$engine" '.versions[$engine] // "not-used"' <<<"$current_manifest") \
+      != $(jq -r --arg engine "$engine" '.versions[$engine] // "not-used"' <<<"$candidate_manifest") ]]; then
       db_upgrade_detected=true
     fi
   done
@@ -1372,15 +1661,20 @@ nixdb deployment plan
 
 Database software versions
 EOF
-  for engine in mongodb mysql manticore; do
+  for engine in mongodb mysql manticore redis dragonfly; do
     case "$engine" in
       mongodb) label=MongoDB ;;
       mysql) label=MySQL ;;
       manticore) label=Manticore ;;
+      redis) label=Redis ;;
+      dragonfly) label=Dragonfly ;;
     esac
-    current=$(jq -r --arg engine "$engine" '.versions[$engine]' <<<"$current_manifest")
-    target=$(jq -r --arg engine "$engine" '.versions[$engine]' <<<"$candidate_manifest")
-    printf '  %-10s current: %-20s target: %s\n' "$label" "$current" "$target"
+    if [[ $(jq -r --arg engine "$engine" '[.instances[] | select(.engine == $engine)] | length > 0' <<<"$current_manifest") == true \
+      || $(jq -r --arg engine "$engine" '[.instances[] | select(.engine == $engine)] | length > 0' <<<"$candidate_manifest") == true ]]; then
+      current=$(jq -r --arg engine "$engine" '.versions[$engine] // "not-used"' <<<"$current_manifest")
+      target=$(jq -r --arg engine "$engine" '.versions[$engine] // "not-used"' <<<"$candidate_manifest")
+      printf '  %-10s current: %-20s target: %s\n' "$label" "$current" "$target"
+    fi
   done
   echo "  Manticore component bundle changed: $(
     if [[ $(jq -cS '.versions.manticoreComponents' <<<"$current_manifest") \
@@ -1439,12 +1733,18 @@ print_upgrade_block() {
   cat >&2 <<'EOF'
 Database software upgrade detected.
 EOF
-  for engine in mongodb mysql manticore; do
+  for engine in mongodb mysql manticore redis dragonfly; do
     case "$engine" in
       mongodb) label=MongoDB ;;
       mysql) label=MySQL ;;
       manticore) label=Manticore ;;
+      redis) label=Redis ;;
+      dragonfly) label=Dragonfly ;;
     esac
+    if [[ $(jq -r --arg engine "$engine" '[.instances[] | select(.engine == $engine)] | length > 0' <<<"$current_manifest") != true \
+      && $(jq -r --arg engine "$engine" '[.instances[] | select(.engine == $engine)] | length > 0' <<<"$candidate_manifest") != true ]]; then
+      continue
+    fi
     cat >&2 <<EOF
 
 $label:
@@ -1477,7 +1777,8 @@ current_generation() {
 
 db_versions_from_manifest() {
   jq -c '{mongodb:.versions.mongodb,mysql:.versions.mysql,manticore:.versions.manticore,
-    manticoreComponents:.versions.manticoreComponents}' <<<"$1"
+    manticoreComponents:.versions.manticoreComponents,redis:.versions.redis,
+    dragonfly:.versions.dragonfly}' <<<"$1"
 }
 
 generation_marker() {
