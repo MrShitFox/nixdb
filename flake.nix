@@ -65,7 +65,7 @@
         }:
         let
           dbPackages = mkPackageSet pkgs.stdenv.hostPlatform.system;
-          nixdbCli = pkgs.callPackage ./packages/nixdb-cli { inherit dbPackages; };
+          nixdbCli = pkgs.callPackage ./packages/nixdb-cli { };
         in
         {
           imports = [ ./modules/nixdb ];
@@ -77,14 +77,6 @@
           };
         };
 
-      evalSystem = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          nixdbModule
-          ./tests/eval-host.nix
-        ];
-      };
-      evaluatedInstances = evalSystem.config.services.nixdb._internal.instances;
     in
     {
       nixosModules = {
@@ -100,9 +92,12 @@
         in
         dbPackages
         // {
-          default = pkgs.callPackage ./packages/nixdb-cli { inherit dbPackages; };
-          nixdb-cli = pkgs.callPackage ./packages/nixdb-cli { inherit dbPackages; };
+          default = pkgs.callPackage ./packages/nixdb-cli { };
+          nixdb-cli = pkgs.callPackage ./packages/nixdb-cli { };
           manticoreDeployed = dbPackages.manticore;
+          vm-integration-test = import ./tests/vm-integration.nix {
+            inherit pkgs nixdbModule;
+          };
         }
       );
 
@@ -114,14 +109,23 @@
           pkgs = import nixpkgs { inherit system; };
         in
         {
-          module-evaluation =
-            pkgs.runCommand "nixdb-module-evaluation"
+          module-evaluation = import ./tests/module-evaluation.nix {
+            inherit nixpkgs pkgs nixdbModule;
+          };
+          cli-tests =
+            pkgs.runCommand "nixdb-cli-tests"
               {
-                evaluated = builtins.toJSON evaluatedInstances;
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.git
+                  pkgs.hostname
+                  pkgs.jq
+                  pkgs.util-linux
+                ];
               }
               ''
-                test ${toString (builtins.length evaluatedInstances)} -eq 3
-                test -n "$evaluated"
+                bash ${./tests/cli.sh} ${self}
                 touch "$out"
               '';
           secret-sanity =
