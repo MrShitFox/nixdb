@@ -15,7 +15,7 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       versions = import ./versions;
       release = {
-        version = "0.2.1";
+        version = "0.2.2";
         revision = self.rev or self.dirtyRev or "unknown";
       };
 
@@ -93,11 +93,26 @@
         dbPackages
         // {
           default = pkgs.callPackage ./packages/nixdb-cli { };
+          nixdb = pkgs.callPackage ./packages/nixdb-cli { };
           nixdb-cli = pkgs.callPackage ./packages/nixdb-cli { };
           manticoreDeployed = dbPackages.manticore;
           vm-integration-test = import ./tests/vm-integration.nix {
             inherit pkgs nixdbModule;
           };
+        }
+      );
+
+      apps = forAllSystems (
+        system:
+        let
+          nixdbApp = {
+            type = "app";
+            program = "${self.packages.${system}.nixdb}/bin/nixdb";
+          };
+        in
+        {
+          nixdb = nixdbApp;
+          default = nixdbApp;
         }
       );
 

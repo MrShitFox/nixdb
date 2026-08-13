@@ -121,7 +121,7 @@ test_non_git_status_and_config() (
     esac
   }
   status=$(cmd_status --json)
-  [[ $(jq -r .sourceCheckout.state <<<"$status") == 'non-git / unavailable' ]]
+  [[ $(jq -r .sourceCheckout.state <<<"$status") == missing ]]
   ! grep -F password <<<"$status"
   cmd_config | grep -F '/example/databases.nix' >/dev/null
 )
@@ -269,6 +269,9 @@ mkdir -p "$mock_bin"
 cat >"$mock_bin/sudo" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$@" >"$SUDO_CAPTURE"
+if [ -n "${SUDO_ENV_CAPTURE:-}" ]; then
+  env >"$SUDO_ENV_CAPTURE"
+fi
 EOF
 chmod +x "$mock_bin/sudo"
 sudo_capture="$test_root/sudo-args"
@@ -284,6 +287,36 @@ if grep -F -- '--preserve-env' "$sudo_capture" >/dev/null; then
   fail 'self-elevation preserved attacker-controlled NIXDB overrides'
 fi
 pass 'self-elevation drops unprivileged NIXDB environment overrides'
+
+plan_sudo_capture="$test_root/plan-sudo-args"
+plan_sudo_env="$test_root/plan-sudo-env"
+privilege_plan_repo="$test_root/privilege-plan-repo"
+make_repo "$privilege_plan_repo"
+test_plan_privilege_elevation() (
+  source_cli "$manifest" "$privilege_plan_repo"
+  export SUDO_CAPTURE="$plan_sudo_capture"
+  export SUDO_ENV_CAPTURE="$plan_sudo_env"
+  export NIXDB_CONFIG_ROOT="$test_root/attacker-controlled"
+  PATH="$mock_bin:$PATH"
+  is_root() { return 1; }
+  git() { return 1; }
+  maybe_elevate_plan plan --latest
+)
+test_plan_privilege_elevation || fail 'unreadable plan metadata did not self-elevate'
+grep -Fx -- plan "$plan_sudo_capture" >/dev/null || fail 'plan self-elevation lost its command'
+if grep -q '^NIXDB_' "$plan_sudo_env"; then
+  fail 'plan self-elevation trusted NIXDB environment overrides'
+fi
+pass 'plan self-elevates without carrying NIXDB overrides across sudo'
+
+test_plan_avoids_unneeded_sudo() (
+  source_cli "$manifest" "$privilege_plan_repo"
+  is_root() { return 1; }
+  need_root() { return 97; }
+  maybe_elevate_plan plan --latest
+)
+test_plan_avoids_unneeded_sudo || fail 'readable plan checkout unnecessarily self-elevated'
+pass 'plan does not self-elevate for a readable Git checkout'
 
 plan_repo="$test_root/plan-repo"
 make_repo "$plan_repo"
@@ -357,6 +390,7 @@ printf '{"schemaVersion":1,"instances":[]}\n' >"$health_context"
 test_non_git_health() (
   export NIXDB_HEALTH_CREDENTIALS="$health_context"
   source_cli "$manifest" "$test_root/non-git"
+  wait_managed_ready() { :; }
   check_units_and_ports() { :; }
   check_filesystems_and_quotas() { :; }
   check_resources() { :; }
@@ -501,5 +535,220 @@ test_marker_preservation() (
 )
 test_marker_preservation || fail 'existing DB-upgrade generation marker was overwritten'
 pass 'later deployments preserve existing DB-upgrade generation metadata'
+
+metadata_lock="$test_root/metadata.lock"
+make_lock "$metadata_lock" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+test_input_metadata_semantics() (
+  source_cli "$manifest" "$test_root/non-git"
+  release_tag_for_revision() {
+    [[ $1 == bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]] && echo v0.2.1
+  }
+  data=$(input_metadata_json_from "$metadata_lock")
+  [[ $(jq -r .configuredInput.ref <<<"$data") == v0.2.0 ]]
+  [[ $(jq -r .lockedRevision <<<"$data") == bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]]
+  [[ $(jq -r .resolvedRelease <<<"$data") == v0.2.1 ]]
+  [[ $(jq -r .resolvedReleaseState <<<"$data") == tagged ]]
+)
+test_input_metadata_semantics || fail 'configured ref and resolved release semantics are conflated'
+pass 'stale configured ref is distinct from resolved stable release'
+
+main_lock="$test_root/main.lock"
+jq '.nodes.nixdb.original.ref = "main"' "$metadata_lock" >"$main_lock"
+path_lock="$test_root/path.lock"
+jq -n '{nodes:{root:{inputs:{nixdb:"nixdb"}},nixdb:{original:{type:"path",path:"/srv/nixdb-v0.2.2"},locked:{type:"path",path:"/srv/nixdb-v0.2.2",narHash:"sha256-example"}}},root:"root",version:7}' >"$path_lock"
+test_untagged_path_and_missing_metadata() (
+  source_cli "$manifest" "$test_root/non-git"
+  release_tag_for_revision() { :; }
+  main_data=$(input_metadata_json_from "$main_lock")
+  path_data=$(input_metadata_json_from "$path_lock")
+  missing_data=$(input_metadata_json_from "$test_root/no-lock")
+  [[ $(jq -r .resolvedReleaseState <<<"$main_data") == untagged ]]
+  [[ $(jq -r .resolvedRelease <<<"$main_data") == null ]]
+  [[ $(jq -r .resolvedReleaseState <<<"$path_data") == not-applicable ]]
+  [[ $(jq -r .configuredInput.type <<<"$path_data") == path ]]
+  [[ $(jq -r .resolvedReleaseState <<<"$missing_data") == unavailable ]]
+  [[ $(jq -r .lockedRevision <<<"$missing_data") == null ]]
+)
+test_untagged_path_and_missing_metadata || fail 'untagged, path, and unavailable input metadata are ambiguous'
+pass 'untagged main, path input, and missing metadata remain explicit'
+
+status_repo="$test_root/status-repo"
+make_repo "$status_repo"
+status_lock="$status_repo/flake.lock"
+jq '.nodes.nixdb.locked.rev = ("b" * 40)' "$status_lock" >"$status_lock.new"
+mv "$status_lock.new" "$status_lock"
+git -C "$status_repo" add flake.lock
+git -C "$status_repo" commit -qm 'lock ahead'
+test_status_json_and_ordering() (
+  source_cli "$manifest" "$status_repo"
+  latest_stable_tag() { echo v0.2.2; }
+  release_tag_for_revision() { [[ $1 == bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]] && echo v0.2.1; }
+  runtime_mongodb_version() { echo 8.2.11; }
+  runtime_mysql_version() { echo 8.4.10; }
+  runtime_manticore_version() { echo 28.6.6; }
+  nixos-version() { echo test-nixos; }
+  systemctl() {
+    case "$1" in
+      --failed) return 0 ;;
+      is-active) echo active ;;
+      *) return 0 ;;
+    esac
+  }
+  status=$(cmd_status --json)
+  jq -e '.framework.configuredInput.ref == "v0.2.0"
+    and .framework.lockedRevision == ("b" * 40)
+    and .framework.resolvedRelease == "v0.2.1"
+    and .framework.resolvedReleaseState == "tagged"
+    and .framework.deploymentState == "lock ahead of active runtime"' <<<"$status" >/dev/null
+  ! grep -F password <<<"$status"
+)
+test_status_json_and_ordering || fail 'status JSON does not expose truthful deployment metadata'
+pass 'status JSON distinguishes configured, locked, resolved, and installed state'
+
+test_dirty_lock_incomplete_state() (
+  source_cli "$manifest" "$status_repo"
+  release_tag_for_revision() { echo v0.2.1; }
+  printf '\n' >>"$status_repo/flake.lock"
+  source=$(source_checkout_json)
+  input=$(input_metadata_json_from "$status_repo/flake.lock")
+  state=$(deployment_state_json)
+  [[ $(deployment_description "$(cat "$manifest")" "$input" "$source" "$state") == 'incomplete candidate activation (dirty flake.lock)' ]]
+)
+test_dirty_lock_incomplete_state || fail 'dirty lock after incomplete deployment is not identified'
+git -C "$status_repo" reset --hard -q HEAD
+pass 'dirty lock after failed legacy activation is identified as incomplete'
+
+readiness_attempts="$test_root/readiness-attempts"
+printf '0\n' >"$readiness_attempts"
+test_manticore_readiness_retry() (
+  source_cli "$manifest" "$test_root/non-git"
+  instance_readiness_probe() {
+    count=$(cat "$readiness_attempts")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$readiness_attempts"
+    if ((count < 3)); then
+      echo 'Buddy SHOW VERSION is not ready' >&2
+      return 1
+    fi
+  }
+  sleep() { :; }
+  retry_probe 'manticore-example readiness' 5 1 instance_readiness_probe manticore-example
+)
+test_manticore_readiness_retry || fail 'Manticore readiness retry did not tolerate a Buddy transient'
+[[ $(cat "$readiness_attempts") == 3 ]] || fail 'Manticore readiness retry count is incorrect'
+pass 'Manticore Buddy readiness is retried and returns promptly when ready'
+
+test_manticore_readiness_final_error() (
+  source_cli "$manifest" "$test_root/non-git"
+  instance_readiness_probe() { echo 'actual final Buddy error' >&2; return 1; }
+  sleep() { SECONDS=$((SECONDS + 2)); }
+  retry_probe 'manticore-example readiness' 1 1 instance_readiness_probe manticore-example
+)
+readiness_error="$test_root/readiness-error"
+if test_manticore_readiness_final_error >"$readiness_error" 2>&1; then
+  fail 'permanent Manticore readiness failure was hidden'
+fi
+grep -F 'actual final Buddy error' "$readiness_error" >/dev/null || fail 'final readiness error was not reported'
+pass 'permanent readiness failures retain the final actual diagnostic'
+
+test_wait_parser_and_instance_validation() (
+  export NIXDB_HEALTH_CREDENTIALS="$health_context"
+  source_cli "$manifest" "$test_root/non-git"
+  wait_instance_ready() { [[ $1 == mongo-example && $2 == 9 ]]; }
+  cmd_wait mongo-example --timeout 9 | grep -F 'mongo-example ready' >/dev/null
+)
+test_wait_parser_and_instance_validation || fail 'nixdb wait did not validate and dispatch its instance'
+pass 'nixdb wait validates manifest instances and timeout'
+
+test_candidate_worktree_deployment() (
+  export NIXDB_CURRENT_SYSTEM="$test_root/current-system"
+  source_cli "$manifest" "$failure_repo"
+  work_tmp=$(mktemp -d "$test_root/candidate-worktree.XXXXXX")
+  mkdir "$work_tmp/host"
+  candidate_lock=$failure_candidate
+  candidate_manifest=$(cat "$manifest")
+  candidate_revision=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  plan_label=v0.2.2
+  db_upgrade_detected=false
+  current_generation() { echo 7; }
+  active_system_health() { :; }
+  nix() {
+    [[ $1 == flake && $2 == check && $3 == "$work_tmp/host" ]] || return 91
+  }
+  nixos-rebuild() {
+    [[ $2 == --flake && $3 == "$work_tmp/host#$FLAKE_HOST" ]] || return 92
+  }
+  write_deployment_state() { :; }
+  record_generation_state() { :; }
+  deploy_candidate false
+)
+candidate_before=$(git -C "$failure_repo" rev-parse HEAD)
+test_candidate_worktree_deployment || fail 'deployment did not use the private candidate worktree'
+[[ $(git -C "$failure_repo" rev-parse HEAD) != "$candidate_before" ]] || fail 'successful candidate test did not commit its owned lock update'
+git -C "$failure_repo" reset --hard -q "$candidate_before"
+pass 'flake check/build/test/switch use the private candidate worktree'
+
+rollback_after_test_capture="$test_root/rollback-after-test"
+test_post_test_failure_restores_exact_generation() (
+  export NIXDB_CURRENT_SYSTEM="$test_root/current-system"
+  source_cli "$manifest" "$failure_repo"
+  work_tmp=$(mktemp -d "$test_root/post-test-work.XXXXXX")
+  candidate_lock=$failure_candidate
+  candidate_manifest=$(cat "$manifest")
+  candidate_revision=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  plan_label=v0.2.2
+  db_upgrade_detected=false
+  current_generation() { echo 7; }
+  record_generation_state() { :; }
+  nix() { :; }
+  nixos-rebuild() { :; }
+  nix-env() {
+    if [[ $1 == --switch-generation ]]; then
+      printf '%s\n' "$2" >"$rollback_after_test_capture"
+    fi
+  }
+  active_system_health() { return 55; }
+  deploy_candidate false
+)
+before_post_test_lock=$(sha256sum "$failure_repo/flake.lock")
+set +e
+test_post_test_failure_restores_exact_generation >/dev/null 2>&1
+post_test_rc=$?
+set -e
+((post_test_rc == 55)) || fail "post-test failure did not preserve original exit code $post_test_rc"
+[[ $(cat "$rollback_after_test_capture") == 7 ]] || fail 'post-test failure did not restore the recorded generation'
+[[ "$before_post_test_lock" == "$(sha256sum "$failure_repo/flake.lock")" ]] || fail 'post-test failure changed downstream flake.lock'
+git -C "$failure_repo" diff --quiet || fail 'post-test failure left downstream source dirty'
+pass 'post-test health failure restores exact prior generation and source'
+
+atomic_state_dir="$test_root/atomic-state"
+test_atomic_deployment_state() (
+  export NIXDB_STATE_DIR="$atomic_state_dir"
+  source_cli "$manifest" "$failure_repo"
+  current_generation() { echo 8; }
+  write_deployment_state "$fake_system" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$(cat "$manifest")" false \
+    "$fake_system" 7 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  data=$(deployment_state_json)
+  [[ $(jq -r .availability <<<"$data") == valid ]]
+  [[ $(jq -r .record.schemaVersion <<<"$data") == 2 ]]
+  [[ $(jq -r .record.source.lockSha256 <<<"$data") =~ ^[0-9a-f]{64}$ ]]
+)
+test_atomic_deployment_state || fail 'deployment state was not written as valid schema-versioned evidence'
+pass 'deployment state records atomic schema-v2 operational evidence'
+
+test_atomic_state_rename_failure() (
+  export NIXDB_STATE_DIR="$atomic_state_dir"
+  source_cli "$manifest" "$failure_repo"
+  previous=$(sha256sum "$atomic_state_dir/deployment-state.json")
+  current_generation() { echo 9; }
+  mv() { return 1; }
+  if write_deployment_state "$fake_system" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$(cat "$manifest")" false \
+    "$fake_system" 8 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; then
+    return 1
+  fi
+  [[ "$previous" == "$(sha256sum "$atomic_state_dir/deployment-state.json")" ]]
+)
+test_atomic_state_rename_failure || fail 'deployment-state rename failure replaced the prior state'
+pass 'failed atomic state write preserves the prior complete state'
 
 printf '1..%d\n' "$passed"

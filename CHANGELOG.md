@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- harden `nixdb plan` privilege handling and make it self-elevate only when
+  deployment metadata needs root access;
+- report configured input, locked revision, resolved release, installed runtime,
+  and incomplete deployment state without treating stale input metadata as a
+  locked ref;
+- add bounded authenticated readiness checks and `nixdb wait` for MongoDB,
+  MySQL, and Manticore Search/Buddy after activation and restart;
+- evaluate build/test/switch from a private candidate checkout, keeping the
+  live downstream lock clean until successful activation;
+- expose the same `nixdb` CLI as a flake package and app for target-version
+  bootstrap deployments, and strengthen atomic deployment-state evidence.
+
 ## v0.2.1 — operator safety hardening (2026-08-13)
 
 - add a schema-versioned, sanitized runtime manifest and Git-independent

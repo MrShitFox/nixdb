@@ -33,7 +33,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("! grep -F SUPER_SECRET_NIXDB_TEST_VALUE_9f31 /etc/nixdb/manifest.json")
     machine.succeed("command -v nixdb")
     machine.succeed("nixdb status")
-    machine.succeed("nixdb status --json | jq -e '.sourceCheckout.state == \"non-git / unavailable\"'")
+    machine.succeed("nixdb status --json | jq -e '.sourceCheckout.state == \"not a Git checkout\"'")
     machine.succeed("nixdb versions --json | jq -e '.mongodb.declared != null'")
     machine.succeed("nixdb resources")
     machine.succeed("nixdb config")

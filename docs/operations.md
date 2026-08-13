@@ -28,8 +28,10 @@ options remain the source of truth.
 - `/etc/nixdb/operator.json` preserves the v0.2.0 runtime configuration
   contract and points the CLI to both files.
 - `/var/lib/nixdb/deployment-state.json` and per-generation records contain
-  only revisions, versions, generations, timestamps, and whether a database
-  upgrade occurred. They are advisory operational state, not source of truth.
+  only revisions, configured input metadata, lock hash, versions, generations,
+  timestamps, and whether a database upgrade occurred. Writes use a mode-0600
+  temporary file and rename. The schema is validated before use. These are
+  advisory operational evidence, not a second configuration source of truth.
 
 ## Daily commands
 
@@ -37,6 +39,8 @@ options remain the source of truth.
 sudo nixdb status
 sudo nixdb status --json
 sudo nixdb health
+sudo nixdb wait
+sudo nixdb wait <instance> --timeout 90
 sudo nixdb doctor
 sudo nixdb versions
 sudo nixdb versions --json
@@ -51,15 +55,29 @@ sudo nixdb restart <instance>
 authenticated MongoDB/MySQL/Manticore operations, unauthenticated rejection,
 Manticore Buddy, RT tables, and HTTP.
 
+`wait` is read-only and validates the instance name against the evaluated
+manifest. It waits for each selected service to be active, all configured
+listeners to be available, and then an authenticated engine probe: MongoDB
+`ping`, MySQL `SELECT VERSION(),1` (including the documented RSA-key path), or
+Manticore SQL `SHOW STATUS`/`SHOW VERSION` plus authenticated HTTP. It uses a
+60-second default bounded timeout and one-second retry interval. Healthy
+services return on their first probe; a timeout preserves the final probe error
+instead of hiding a permanent failure. `restart` uses the same readiness check
+before full health.
+
 `doctor` checks the operator environment and prerequisites: NixOS/systemd,
 manifest schema, configured mounts, XFS plus `prjquota`, the config root,
 required commands, and the flake input needed for deployment. It does not
-connect to databases or change the system.
+connect to databases or change the system. Deployment metadata diagnostics
+distinguish a missing config root, non-Git checkout, missing input/lock, and
+metadata that requires root; the latter does not make unrelated runtime checks
+fail.
 
 The read-only commands and validated `logs`/`restart` instance lookup use the
 manifest rather than parsing Nix source. They work without `.git`; `status`
-reports `Source checkout: non-git / unavailable`. Update, deploy, and rollback
-require Git because their transaction restores exact downstream source state.
+reports whether the root is missing, inaccessible, non-Git, or available.
+Update, deploy, and rollback require Git because their transaction restores
+exact downstream source state.
 
 ## Planning
 
@@ -67,7 +85,7 @@ require Git because their transaction restores exact downstream source state.
 nixdb plan             # newest stable release
 nixdb plan --latest    # same selection, explicitly
 nixdb plan --main      # public development branch
-nixdb plan v0.2.1      # exact tag or revision
+nixdb plan v0.2.2      # exact tag or revision
 ```
 
 Planning requires a clean downstream checkout but does not mutate it. nixdb
@@ -75,6 +93,18 @@ archives the tracked host source into a mode-0700 temporary directory, creates
 a candidate lock there, evaluates the candidate manifest, compares database
 versions, prints current and candidate flake inputs, and removes the temporary
 state. It does not activate systemd or connect to databases.
+
+When a root-owned config checkout cannot be read by the invoking operator,
+`nixdb plan` transparently re-executes through `sudo` with all `NIXDB_*`
+environment overrides removed. If the checkout is already readable, it does not
+unnecessarily prompt for sudo. Thus `nixdb plan --latest` is safe to use from a
+normal shell without remembering a special privilege rule.
+
+Status is deliberately split into independent facts: configured input (the
+declaration in `flake.lock`), locked revision, resolved stable release for that
+revision (`untagged` if no matching stable tag is known), installed runtime
+version/revision, and deployment state. JSON reports the same values as typed
+fields; unavailable metadata is `null`, never a misleading placeholder.
 
 Stable auto-selection accepts only tags matching
 `^v[0-9]+\.[0-9]+\.[0-9]+$` and applies version sorting. Tags such as
@@ -85,7 +115,7 @@ They can be requested only as explicit deployment refs.
 
 ```console
 sudo nixdb update             # newest stable v* tag
-sudo nixdb deploy v0.2.1      # exact public tag/ref
+sudo nixdb deploy v0.2.2      # exact public tag/ref
 sudo nixdb update --main      # explicit development opt-in
 ```
 
@@ -109,22 +139,47 @@ sudo nixdb deploy v0.3.0 --allow-db-upgrade
 Use this flag only after reading upstream upgrade guidance and verifying usable
 backups. nixdb does not provide a backup framework.
 
-After the guard permits deployment, nixdb atomically installs only the
-candidate downstream lock and executes, in order:
+After the guard permits deployment, nixdb keeps the live downstream source
+clean while it executes from a private candidate archive and candidate lock:
 
 1. `nix flake check`;
 2. `nixos-rebuild build`;
 3. `nixos-rebuild test`;
 4. full health validation;
 5. `nixos-rebuild switch`;
-6. full health validation.
+6. full health validation;
+7. only then atomically install and commit the candidate `flake.lock`, followed
+   by atomic deployment-state evidence.
 
-It never runs a general `nix flake update`. A successful lock change is
-committed in the downstream host repository. On failure or interruption it
-restores the exact lock and checkout; if activation began, it switches back to
-the recorded NixOS generation and checks health with the previous system's CLI.
-The original failure code is preserved and incomplete recovery is reported as
-critical. Recovery never attempts to roll back database contents.
+It never runs a general `nix flake update`. This candidate layout avoids the
+normal temporary dirty-tree warning and makes the lock mutation an explicit
+commit phase rather than part of evaluation. `nixos-rebuild test` is still a
+runtime mutation, so the original generation, source revision, and lock backup
+are recorded and recovery traps are armed before it starts. On failure or
+interruption nixdb reports the failed phase, restores exact source, restores the
+recorded generation if activation began, and runs recovery health through the
+previous generation's CLI. The original failure code is preserved and incomplete
+recovery is reported as critical. Recovery never attempts to roll back database
+contents.
+
+## Target-version bootstrap
+
+The flake exports `packages.<system>.nixdb` and `apps.<system>.nixdb`, so a host
+can execute deployment logic from the target release rather than relying on an
+older installed CLI:
+
+```console
+nix run github:MrShitFox/nixdb/v0.2.2#nixdb -- help
+sudo nix run github:MrShitFox/nixdb/v0.2.2#nixdb -- \
+  --config-root /etc/nixos --flake-host db-host --input-name nixdb \
+  deploy v0.2.2
+```
+
+The explicit `--config-root`, `--flake-host`, and `--input-name` arguments are
+validated command context. For a local immutable candidate, use
+`deploy --input-url path:/srv/nixdb-v0.2.2`; it evaluates and activates the
+same target CLI without a publication step. No separate bootstrap updater is
+maintained.
 
 ## NixOS rollback
 

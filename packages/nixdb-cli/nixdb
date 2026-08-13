@@ -13,10 +13,14 @@ operator_value() {
   fi
 }
 
-readonly CONFIG_ROOT="${NIXDB_CONFIG_ROOT:-$(operator_value configRoot /etc/nixos)}"
-readonly FLAKE_HOST="${NIXDB_HOST:-$(operator_value flakeHost "$(hostname)")}"
-readonly INPUT_NAME="${NIXDB_INPUT_NAME:-$(operator_value inputName nixdb)}"
-readonly INPUT_URL="${NIXDB_INPUT_URL:-$(operator_value inputUrl github:MrShitFox/nixdb)}"
+# These defaults deliberately remain overridable by explicit command-line
+# context flags. That lets a CLI obtained through `nix run` operate a legacy
+# host without inventing a separate bootstrap program. `need_root` removes all
+# NIXDB_* environment overrides before privilege escalation.
+CONFIG_ROOT="${NIXDB_CONFIG_ROOT:-$(operator_value configRoot /etc/nixos)}"
+FLAKE_HOST="${NIXDB_HOST:-$(operator_value flakeHost "$(hostname)")}"
+INPUT_NAME="${NIXDB_INPUT_NAME:-$(operator_value inputName nixdb)}"
+INPUT_URL="${NIXDB_INPUT_URL:-$(operator_value inputUrl github:MrShitFox/nixdb)}"
 readonly RELEASE_REPOSITORY="${NIXDB_RELEASE_REPOSITORY:-$(operator_value releaseRepository https://github.com/MrShitFox/nixdb.git)}"
 readonly MANIFEST="${NIXDB_MANIFEST:-$(operator_value manifestPath /etc/nixdb/manifest.json)}"
 readonly HEALTH_CREDENTIALS="${NIXDB_HEALTH_CREDENTIALS:-$(operator_value healthCredentialsPath /etc/nixdb/health-credentials.json)}"
@@ -24,6 +28,8 @@ readonly STATE_DIR="${NIXDB_STATE_DIR:-/var/lib/nixdb}"
 readonly DEPLOY_LOCK="${NIXDB_DEPLOY_LOCK:-/run/lock/nixdb-deploy.lock}"
 readonly SYSTEM_PROFILE="${NIXDB_SYSTEM_PROFILE:-/nix/var/nix/profiles/system}"
 readonly CURRENT_SYSTEM="${NIXDB_CURRENT_SYSTEM:-/run/current-system}"
+readonly DEFAULT_READY_TIMEOUT=60
+readonly READY_RETRY_INTERVAL=1
 
 work_tmp=""
 health_tmp=""
@@ -36,6 +42,12 @@ tx_old_system=""
 tx_old_generation=""
 tx_lock_backup=""
 tx_lock_temp=""
+deployment_phase="not started"
+
+plan_ref=""
+plan_label=""
+candidate_input_url=""
+candidate_input_metadata='{}'
 
 cleanup() {
   if [[ -n "$health_tmp" && -d "$health_tmp" ]]; then
@@ -60,11 +72,29 @@ warn() {
 }
 
 need_root() {
-  if (( EUID != 0 )); then
+  if ! is_root; then
     # Do not carry test/operator path overrides across the privilege boundary.
-    # The elevated process must rediscover its declarative root-owned config.
-    exec sudo -- "$0" "$@"
+    # Do this explicitly rather than relying only on a site's sudo env_reset
+    # policy. Context passed as command-line flags is intentionally retained.
+    exec env \
+      -u NIXDB_CONFIG_ROOT \
+      -u NIXDB_HOST \
+      -u NIXDB_INPUT_NAME \
+      -u NIXDB_INPUT_URL \
+      -u NIXDB_OPERATOR_CONFIG \
+      -u NIXDB_MANIFEST \
+      -u NIXDB_HEALTH_CREDENTIALS \
+      -u NIXDB_STATE_DIR \
+      -u NIXDB_DEPLOY_LOCK \
+      -u NIXDB_SYSTEM_PROFILE \
+      -u NIXDB_CURRENT_SYSTEM \
+      -u NIXDB_SOURCE_ONLY \
+      sudo -- "$0" "$@"
   fi
+}
+
+is_root() {
+  (( EUID == 0 ))
 }
 
 manifest_json() {
@@ -202,27 +232,128 @@ lock_node_from() {
 locked_input_field_from() {
   local lock_file=$1 field=$2 node
   [[ -r "$lock_file" ]] || {
-    echo unknown
+    echo ''
     return
   }
   node=$(lock_node_from "$lock_file")
   [[ -n "$node" ]] || {
-    echo unknown
+    echo ''
     return
   }
   jq -r --arg node "$node" --arg field "$field" \
-    '.nodes[$node].locked[$field] // .nodes[$node].original[$field] // "unknown"' \
+    '.nodes[$node].locked[$field] // empty' \
     "$lock_file"
 }
 
 locked_input_json_from() {
   local lock_file=$1 node
+  [[ -r "$lock_file" ]] || {
+    echo '{}'
+    return
+  }
   node=$(lock_node_from "$lock_file")
   [[ -n "$node" ]] || {
     echo '{}'
     return
   }
   jq -c --arg node "$node" '{original:.nodes[$node].original,locked:.nodes[$node].locked}' "$lock_file"
+}
+
+configured_input_json_from() {
+  local lock_file=$1 node
+  [[ -r "$lock_file" ]] || {
+    echo null
+    return
+  }
+  node=$(lock_node_from "$lock_file")
+  [[ -n "$node" ]] || {
+    echo null
+    return
+  }
+  jq -c --arg node "$node" '.nodes[$node].original // null' "$lock_file"
+}
+
+configured_input_description() {
+  jq -r '
+    if . == null then "unavailable"
+    elif .type == "github" then
+      "github:" + (.owner // "?") + "/" + (.repo // "?")
+      + (if .ref == null then "" else "/" + .ref end)
+    elif .type == "path" then "path:" + (.path // "?")
+    elif .type == "git" then (.url // "git input")
+    else (.type // "unknown input")
+    end
+  '
+}
+
+release_tag_for_revision() {
+  local revision=$1
+  [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+  git ls-remote --tags "$RELEASE_REPOSITORY" 'refs/tags/v*' 2>/dev/null \
+    | awk -v revision="$revision" '
+        $1 == revision && $2 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+(\^\{\})?$/ {
+          tag = $2
+          sub(/^refs\/tags\//, "", tag)
+          sub(/\^\{\}$/, "", tag)
+          print tag
+        }
+      ' \
+    | sort -Vu \
+    | tail -n 1
+}
+
+input_metadata_json_from() {
+  local lock_file=$1 configured locked revision release state
+  configured=$(configured_input_json_from "$lock_file")
+  locked=$(locked_input_json_from "$lock_file")
+  revision=$(locked_input_field_from "$lock_file" rev)
+  state=unavailable
+  release=null
+
+  if [[ "$configured" == null && "$locked" == '{}' ]]; then
+    state=unavailable
+  elif [[ $(jq -r '.type // empty' <<<"$configured") == path ]]; then
+    state=not-applicable
+  elif [[ ! "$revision" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    state=not-applicable
+  else
+    if release=$(release_tag_for_revision "$revision"); then
+      if [[ -n "$release" ]]; then
+        state=tagged
+        release=$(jq -Rn --arg value "$release" '$value')
+      else
+        state=untagged
+        release=null
+      fi
+    else
+      # Do not call an input untagged merely because the tag source could not
+      # be consulted. The distinction is surfaced in both text and JSON.
+      state=unavailable
+      release=null
+    fi
+  fi
+
+  jq -cn \
+    --argjson configured "$configured" \
+    --argjson locked "$locked" \
+    --arg revision "$revision" \
+    --arg state "$state" \
+    --argjson release "$release" \
+    '{configuredInput:$configured,locked:$locked,
+      lockedRevision:(if $revision == "" then null else $revision end),
+      resolvedRelease:$release,resolvedReleaseState:$state}'
+}
+
+resolved_release_description() {
+  local metadata=$1 state release
+  state=$(jq -r .resolvedReleaseState <<<"$metadata")
+  release=$(jq -r '.resolvedRelease // empty' <<<"$metadata")
+  case "$state" in
+    tagged) printf '%s\n' "$release" ;;
+    untagged) echo untagged ;;
+    not-applicable) echo 'not applicable (path/non-revision input)' ;;
+    *) echo unavailable ;;
+  esac
 }
 
 runtime_mongodb_version() {
@@ -264,7 +395,13 @@ buddy_runtime_version() {
 }
 
 source_checkout_json() {
-  if git -C "$CONFIG_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [[ ! -e "$CONFIG_ROOT" ]]; then
+    jq -cn '{state:"missing",commit:null,branch:null,clean:null}'
+  elif [[ ! -d "$CONFIG_ROOT" ]]; then
+    jq -cn '{state:"not a directory",commit:null,branch:null,clean:null}'
+  elif [[ ! -r "$CONFIG_ROOT" || ! -x "$CONFIG_ROOT" ]]; then
+    jq -cn '{state:"requires root",commit:null,branch:null,clean:null}'
+  elif git -C "$CONFIG_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     local head branch clean
     head=$(git -C "$CONFIG_ROOT" rev-parse --verify HEAD)
     branch=$(git -C "$CONFIG_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo detached)
@@ -276,7 +413,87 @@ source_checkout_json() {
     jq -cn --arg state git --arg head "$head" --arg branch "$branch" --argjson clean "$clean" \
       '{state:$state,commit:$head,branch:$branch,clean:$clean}'
   else
-    jq -cn '{state:"non-git / unavailable",commit:null,branch:null,clean:null}'
+    jq -cn '{state:"not a Git checkout",commit:null,branch:null,clean:null}'
+  fi
+}
+
+deployment_state_json() {
+  local path="$STATE_DIR/deployment-state.json"
+  if [[ ! -e "$path" ]]; then
+    jq -cn '{availability:"absent",record:null}'
+  elif [[ ! -r "$path" ]]; then
+    jq -cn '{availability:"requires root",record:null}'
+  elif jq -e '
+      (.schemaVersion == 1 or .schemaVersion == 2)
+      and (.system | type == "string")
+      and (.generation | type == "string")
+      and (.hostRevision | type == "string")
+      and (.framework | type == "object")
+      and (.dbVersions | type == "object")
+      and (.previous | type == "object")
+    ' "$path" >/dev/null 2>&1; then
+    jq -cn --argjson record "$(cat "$path")" '{availability:"valid",record:$record}'
+  else
+    jq -cn '{availability:"invalid",record:null}'
+  fi
+}
+
+lock_file_is_dirty() {
+  [[ $(jq -r .state <<<"$(source_checkout_json)") == git ]] \
+    && ! git -C "$CONFIG_ROOT" diff --quiet -- flake.lock
+}
+
+deployment_description() {
+  local manifest=$1 input=$2 source=$3 state=$4 runtime_revision locked_revision
+  local source_state source_clean state_availability state_system active_system locked_release installed_release
+  runtime_revision=$(jq -r .framework.revision <<<"$manifest")
+  locked_revision=$(jq -r '.lockedRevision // empty' <<<"$input")
+  source_state=$(jq -r .state <<<"$source")
+  source_clean=$(jq -r 'if .clean == null then "unknown" else .clean end' <<<"$source")
+  state_availability=$(jq -r .availability <<<"$state")
+
+  if [[ "$source_state" == git && "$source_clean" == false ]] && lock_file_is_dirty; then
+    echo 'incomplete candidate activation (dirty flake.lock)'
+    return
+  fi
+
+  if [[ "$state_availability" == valid ]]; then
+    state_system=$(jq -r .record.system <<<"$state")
+    active_system=$(readlink -f "$CURRENT_SYSTEM" 2>/dev/null || true)
+    if [[ -n "$active_system" && "$active_system" != "$state_system" ]] \
+      && [[ "$source_clean" == false ]]; then
+      echo 'incomplete candidate activation (active system differs from last successful deployment)'
+      return
+    fi
+  fi
+
+  if [[ -z "$locked_revision" ]]; then
+    echo 'host flake input unavailable'
+  elif [[ "$locked_revision" == "$runtime_revision" ]]; then
+    if [[ "$source_state" == git && "$source_clean" == false ]]; then
+      echo 'source has pending unactivated changes'
+    else
+      echo 'locked input matches active system'
+    fi
+  elif [[ "$source_state" == git && "$source_clean" == false ]]; then
+    echo 'incomplete candidate activation (locked input differs from active system)'
+  else
+    locked_release=$(jq -r '.resolvedRelease // empty' <<<"$input")
+    installed_release="v$(jq -r .framework.version <<<"$manifest")"
+    if [[ "$locked_release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+      && [[ "$installed_release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      if [[ "$locked_release" == "$installed_release" ]]; then
+        echo 'locked input differs from active system'
+      elif [[ $(printf '%s\n%s\n' "$installed_release" "$locked_release" | sort -V | head -n 1) == "$installed_release" ]]; then
+        echo 'lock ahead of active runtime'
+      else
+        echo 'active runtime ahead of lock'
+      fi
+    else
+      # Without a total ordering for arbitrary revisions, this intentionally
+      # describes the observed state rather than guessing which side is newer.
+      echo 'locked input differs from active system'
+    fi
   fi
 }
 
@@ -287,6 +504,8 @@ nixdb - operate the nixdb NixOS database stack
 READ ONLY
   nixdb status [--json]          Runtime, framework input, versions, and units
   nixdb health                   Full storage/resource/authentication checks
+  nixdb wait [instance] [--timeout <seconds>]
+                                  Wait for authenticated database readiness
   nixdb doctor                   Operator and host prerequisite checks
   nixdb versions [--json]        Declared and observed component versions
   nixdb quotas                   XFS project quota reports
@@ -305,7 +524,11 @@ DEPLOYMENT
   nixdb update --main            Explicitly deploy development main
   nixdb update --allow-db-upgrade
   nixdb deploy <ref> [--allow-db-upgrade]
+  nixdb deploy --input-url <flake-ref> [--allow-db-upgrade]
   nixdb rollback [--allow-db-binary-rollback]
+
+BOOTSTRAP CONTEXT
+  nixdb --config-root <path> --flake-host <host> --input-name <name> <command>
 
 Database package changes are blocked before nixos-rebuild test unless
 --allow-db-upgrade is explicitly supplied. Rollback changes NixOS/system
@@ -314,21 +537,19 @@ EOF
 }
 
 cmd_status() {
-  local output=${1:-text} manifest source latest locked_revision locked_ref deployment failed services
+  local output=${1:-text} manifest source latest input deployment_record deployment failed services
+  local configured_description locked_revision resolved_description
   [[ "$output" == text || "$output" == --json ]] || die "usage: nixdb status [--json]"
   manifest=$(manifest_json)
   source=$(source_checkout_json)
   latest=$(latest_stable_tag || true)
   [[ -n "$latest" ]] || latest=unavailable
-  locked_revision=$(locked_input_field_from "$CONFIG_ROOT/flake.lock" rev)
-  locked_ref=$(locked_input_field_from "$CONFIG_ROOT/flake.lock" ref)
-  if [[ $(jq -r .framework.revision <<<"$manifest") == "$locked_revision" ]]; then
-    deployment="locked input matches active system"
-  elif [[ "$locked_revision" == unknown ]]; then
-    deployment="host flake input unavailable"
-  else
-    deployment="locked input differs from active system"
-  fi
+  input=$(input_metadata_json_from "$CONFIG_ROOT/flake.lock")
+  configured_description=$(jq -c .configuredInput <<<"$input" | configured_input_description)
+  locked_revision=$(jq -r '.lockedRevision // "unavailable"' <<<"$input")
+  resolved_description=$(resolved_release_description "$input")
+  deployment_record=$(deployment_state_json)
+  deployment=$(deployment_description "$manifest" "$input" "$source" "$deployment_record")
   failed=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
   services=$(while read -r service; do
     jq -cn --arg name "$service" --arg state "$(systemctl is-active "$service.service" 2>/dev/null || true)" \
@@ -341,18 +562,20 @@ cmd_status() {
       --arg configRoot "$CONFIG_ROOT" \
       --arg configHint "$(jq -r .operator.configHint <<<"$manifest")" \
       --arg latest "$latest" \
-      --arg lockedRef "$locked_ref" \
-      --arg lockedRevision "$locked_revision" \
       --arg deployment "$deployment" \
       --arg nixos "$(nixos-version 2>/dev/null || echo unavailable)" \
       --arg target "$(systemctl is-active databases.target 2>/dev/null || true)" \
       --argjson failed "$failed" \
       --argjson source "$source" \
+      --argjson input "$input" \
+      --argjson deploymentRecord "$deployment_record" \
       --argjson manifest "$manifest" \
       --argjson services "$services" \
       '{host:$host,configRoot:$configRoot,configHint:$configHint,sourceCheckout:$source,
-        framework:{installed:$manifest.framework,lockedRef:$lockedRef,lockedRevision:$lockedRevision,
-          latestStable:$latest,deploymentState:$deployment},nixos:$nixos,
+        framework:{installed:$manifest.framework,configuredInput:$input.configuredInput,
+          locked:$input.locked,lockedRevision:$input.lockedRevision,
+          resolvedRelease:$input.resolvedRelease,resolvedReleaseState:$input.resolvedReleaseState,
+          latestStable:$latest,deploymentState:$deployment},deploymentRecord:$deploymentRecord,nixos:$nixos,
         databasesTarget:$target,failedSystemUnits:$failed,versions:$manifest.versions,
         services:$services}'
     return
@@ -367,8 +590,9 @@ nixdb status
   Host Git commit:       $(jq -r '.commit // "unavailable"' <<<"$source")
   Host branch state:     $(jq -r '.branch // "unavailable"' <<<"$source")
   Host tree clean:       $(jq -r 'if .clean == null then "unavailable" else .clean end' <<<"$source")
-  nixdb locked ref:      $locked_ref
+  nixdb configured input: $configured_description
   nixdb locked revision: $locked_revision
+  nixdb resolved release: $resolved_description
   nixdb installed:       $(jq -r '.framework.version + " (" + .framework.revision + ")"' <<<"$manifest")
   Latest stable nixdb:   $latest
   Deployment state:      $deployment
@@ -579,6 +803,142 @@ wait_instance_listeners() {
   die "$name.service did not open its configured listeners within 60 seconds"
 }
 
+retry_probe() {
+  local label=$1 timeout=$2 interval=$3
+  shift 3
+  local deadline=$((SECONDS + timeout)) attempt=1 output rc=0
+  while true; do
+    if output=$("$@" 2>&1); then
+      return 0
+    else
+      rc=$?
+    fi
+    if ((SECONDS >= deadline)); then
+      printf 'nixdb: %s did not become ready within %ss; last probe error: %s\n' \
+        "$label" "$timeout" "${output:-probe exited $rc without output}" >&2
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep "$interval"
+  done
+}
+
+instance_listeners_ready() {
+  local name=$1 address port
+  while IFS=$'\t' read -r address port; do
+    if ! listener_is_ready "$address" "$port"; then
+      printf 'listener tcp/%s is not available on %s\n' "$port" "$address" >&2
+      return 1
+    fi
+  done < <(
+    instances_json \
+      | jq -r --arg name "$name" '.[] | select(.name == $name) | .listeners[] | [.address, (.port|tostring)] | @tsv'
+  )
+}
+
+probe_mongodb_ready() {
+  local name=$1 credential host port user password ping
+  credential=$(credential_for "$name")
+  host=$(probe_host "$(jq -r .address <<<"$credential")")
+  port=$(jq -r .ports.main <<<"$credential")
+  user=$(jq -r .username <<<"$credential")
+  password=$(jq -r .password <<<"$credential")
+  if ! ping=$(mongosh --quiet --host "$host" --port "$port" --username "$user" \
+    --password "$password" --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok'); then
+    echo 'authenticated MongoDB ping command failed' >&2
+    return 1
+  fi
+  [[ "$ping" == *1* ]] || {
+    echo 'authenticated MongoDB ping did not return ok:1' >&2
+    return 1
+  }
+}
+
+probe_mysql_ready() {
+  local name=$1 credential host port user password result expected
+  credential=$(credential_for "$name")
+  host=$(probe_host "$(jq -r .address <<<"$credential")")
+  port=$(jq -r .ports.main <<<"$credential")
+  user=$(jq -r .username <<<"$credential")
+  password=$(jq -r .password <<<"$credential")
+  expected=$(manifest_json | jq -r .versions.mysql)
+  if ! result=$(MYSQL_PWD="$password" mysql --protocol=TCP --host="$host" --port="$port" \
+    --user="$user" --ssl-mode=DISABLED --get-server-public-key \
+    --batch --skip-column-names --execute='SELECT VERSION(),1;'); then
+    echo 'authenticated MySQL query command failed' >&2
+    return 1
+  fi
+  [[ "$result" == "$expected"$'\t1' ]] || {
+    echo "authenticated MySQL query/version returned unexpected result: $result" >&2
+    return 1
+  }
+}
+
+probe_manticore_ready() {
+  local name=$1 credential host sql_port http_port user password result code expected_search expected_buddy
+  credential=$(credential_for "$name")
+  host=$(probe_host "$(jq -r .address <<<"$credential")")
+  sql_port=$(jq -r .ports.sql <<<"$credential")
+  http_port=$(jq -r .ports.http <<<"$credential")
+  user=$(jq -r .username <<<"$credential")
+  password=$(jq -r .password <<<"$credential")
+  expected_search=$(manifest_json | jq -r .versions.manticore)
+  expected_buddy=$(manifest_json | jq -r .versions.manticoreComponents.buddy)
+  if ! result=$(MYSQL_PWD="$password" mysql --protocol=TCP --host="$host" --port="$sql_port" \
+    --user="$user" --ssl-mode=DISABLED --batch --skip-column-names \
+    --execute='SHOW STATUS; SHOW VERSION;'); then
+    echo 'authenticated Manticore SQL readiness query failed' >&2
+    return 1
+  fi
+  grep -Fq "$expected_search" <<<"$result" || {
+    echo 'Manticore Search version is not ready' >&2
+    return 1
+  }
+  grep -Fq "$expected_buddy" <<<"$result" || {
+    echo 'Manticore Buddy SHOW VERSION is not ready' >&2
+    return 1
+  }
+  if ! code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --user "$user:$password" --data-binary 'SHOW STATUS' "http://$host:$http_port/sql?mode=raw"); then
+    echo 'authenticated Manticore HTTP readiness request failed' >&2
+    return 1
+  fi
+  [[ "$code" == 200 ]] || {
+    echo "authenticated Manticore HTTP readiness returned $code" >&2
+    return 1
+  }
+}
+
+instance_readiness_probe() {
+  local name=$1 engine
+  systemctl is-active --quiet "$name.service" || {
+    echo "$name.service is not active" >&2
+    return 1
+  }
+  instance_listeners_ready "$name"
+  engine=$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engine')
+  case "$engine" in
+    mongodb) probe_mongodb_ready "$name" ;;
+    mysql) probe_mysql_ready "$name" ;;
+    manticore) probe_manticore_ready "$name" ;;
+    *) echo "unsupported engine in runtime manifest: $engine" >&2; return 1 ;;
+  esac
+}
+
+wait_instance_ready() {
+  local name=$1 timeout=${2:-$DEFAULT_READY_TIMEOUT}
+  [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || die "invalid readiness timeout: $timeout"
+  retry_probe "$name readiness" "$timeout" "$READY_RETRY_INTERVAL" instance_readiness_probe "$name" \
+    || die "$name did not become ready"
+}
+
+wait_managed_ready() {
+  local timeout=${1:-$DEFAULT_READY_TIMEOUT} name
+  while IFS= read -r name; do
+    wait_instance_ready "$name" "$timeout"
+  done < <(service_names)
+}
+
 check_filesystems_and_quotas() {
   local data mount fstype options project limit expected actual
   data=$(instances_json)
@@ -628,17 +988,14 @@ check_resources() {
 }
 
 check_mongodb_auth() {
-  local row credential name host port user password ping
+  local row credential name host port
   while IFS= read -r row; do
     name=$(jq -r .name <<<"$row")
+    retry_probe "$name MongoDB authentication" "$DEFAULT_READY_TIMEOUT" "$READY_RETRY_INTERVAL" \
+      probe_mongodb_ready "$name" || die "$name authenticated ping failed"
     credential=$(credential_for "$name")
     host=$(probe_host "$(jq -r .address <<<"$credential")")
     port=$(jq -r .ports.main <<<"$credential")
-    user=$(jq -r .username <<<"$credential")
-    password=$(jq -r .password <<<"$credential")
-    ping=$(mongosh --quiet --host "$host" --port "$port" --username "$user" \
-      --password "$password" --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok')
-    [[ "$ping" == *1* ]] || die "$name authenticated ping failed"
     if mongosh --quiet --host "$host" --port "$port" \
       --eval 'db.getSiblingDB("admin").getUsers()' >/dev/null 2>&1; then
       die "$name accepted unauthenticated privileged access"
@@ -648,27 +1005,17 @@ check_mongodb_auth() {
 }
 
 check_mysql_auth() {
-  local row credential name host port user password result expected
-  expected=$(manifest_json | jq -r .versions.mysql)
+  local row name
   while IFS= read -r row; do
     name=$(jq -r .name <<<"$row")
-    credential=$(credential_for "$name")
-    host=$(probe_host "$(jq -r .address <<<"$credential")")
-    port=$(jq -r .ports.main <<<"$credential")
-    user=$(jq -r .username <<<"$credential")
-    password=$(jq -r .password <<<"$credential")
-    result=$(MYSQL_PWD="$password" mysql --protocol=TCP --host="$host" --port="$port" \
-      --user="$user" --ssl-mode=DISABLED --get-server-public-key \
-      --batch --skip-column-names --execute='SELECT VERSION(),1;')
-    [[ "$result" == "$expected"$'\t1' ]] || die "$name authenticated query/version failed"
+    retry_probe "$name MySQL authentication" "$DEFAULT_READY_TIMEOUT" "$READY_RETRY_INTERVAL" \
+      probe_mysql_ready "$name" || die "$name authenticated query/version failed"
     echo "  $name auth/query: PASS"
   done < <(instances_json | jq -c '.[] | select(.engine == "mysql")')
 }
 
 check_manticore_auth() {
-  local row credential name host sql_port http_port user password table result code unauth body expected_search expected_buddy
-  expected_search=$(manifest_json | jq -r .versions.manticore)
-  expected_buddy=$(manifest_json | jq -r .versions.manticoreComponents.buddy)
+  local row credential name host sql_port http_port user password table result code unauth body
   health_tmp=$(mktemp -d /run/nixdb-health.XXXXXX)
   chmod 0700 "$health_tmp"
   while IFS= read -r row; do
@@ -679,15 +1026,15 @@ check_manticore_auth() {
     http_port=$(jq -r .ports.http <<<"$credential")
     user=$(jq -r .username <<<"$credential")
     password=$(jq -r .password <<<"$credential")
+    retry_probe "$name Manticore/Buddy readiness" "$DEFAULT_READY_TIMEOUT" "$READY_RETRY_INTERVAL" \
+      probe_manticore_ready "$name" || die "$name Manticore readiness failed"
     table="nixdb_health_${name//-/_}_$$"
     result=$(MYSQL_PWD="$password" mysql --protocol=TCP --host="$host" --port="$sql_port" \
       --user="$user" --ssl-mode=DISABLED --batch --skip-column-names --execute="
-        SHOW STATUS; SHOW VERSION; DROP TABLE IF EXISTS $table;
+        DROP TABLE IF EXISTS $table;
         CREATE TABLE $table(title text); INSERT INTO $table VALUES(1,'hello');
         SELECT id,title FROM $table; DROP TABLE $table;
       ")
-    grep -Fq "$expected_search" <<<"$result" || die "$name Search version check failed"
-    grep -Fq "$expected_buddy" <<<"$result" || die "$name Buddy SHOW VERSION check failed"
     grep -Fq $'1\thello' <<<"$result" || die "$name RT table check failed"
     body="$health_tmp/$name-http.json"
     code=$(curl --silent --show-error --output "$body" --write-out '%{http_code}' \
@@ -717,6 +1064,8 @@ run_health() {
   manifest_json >/dev/null
   credentials_json >/dev/null
   echo 'nixdb health'
+  wait_managed_ready "$DEFAULT_READY_TIMEOUT"
+  echo '  service/listener/auth readiness: PASS'
   check_units_and_ports
   check_filesystems_and_quotas
   check_resources
@@ -741,9 +1090,38 @@ cmd_restart() {
   validate_instance "$1"
   echo "Restarting $1.service"
   systemctl restart "$1.service"
-  wait_instance_listeners "$1"
-  systemctl is-active --quiet "$1.service" || die "$1.service did not become active"
+  wait_instance_ready "$1" "$DEFAULT_READY_TIMEOUT"
+  echo "  $1 readiness: PASS"
   run_health
+}
+
+cmd_wait() {
+  local timeout=$DEFAULT_READY_TIMEOUT target=""
+  while (($#)); do
+    case "$1" in
+      --timeout)
+        [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] \
+          || die 'usage: nixdb wait [<instance>] [--timeout <seconds>]'
+        timeout=$2
+        shift
+        ;;
+      --*) die 'usage: nixdb wait [<instance>] [--timeout <seconds>]' ;;
+      *)
+        [[ -z "$target" ]] || die 'usage: nixdb wait [<instance>] [--timeout <seconds>]'
+        target=$1
+        ;;
+    esac
+    shift
+  done
+  credentials_json >/dev/null
+  if [[ -n "$target" ]]; then
+    validate_instance "$target"
+    wait_instance_ready "$target" "$timeout"
+    echo "nixdb wait: $target ready"
+  else
+    wait_managed_ready "$timeout"
+    echo 'nixdb wait: all managed instances ready'
+  fi
 }
 
 cmd_doctor() {
@@ -786,12 +1164,20 @@ cmd_doctor() {
     echo "  config root $CONFIG_ROOT: FAIL"
     failures=$((failures + 1))
   fi
-  if git -C "$CONFIG_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    && [[ -r "$CONFIG_ROOT/flake.lock" ]] \
-    && [[ $(lock_node_from "$CONFIG_ROOT/flake.lock") != "" ]]; then
-    echo '  deployment Git/flake input: PASS'
+  if [[ ! -e "$CONFIG_ROOT" ]]; then
+    echo '  deployment metadata: config root does not exist'
+  elif [[ ! -r "$CONFIG_ROOT" || ! -x "$CONFIG_ROOT" ]]; then
+    echo '  deployment metadata: requires root (config root is not readable)'
+  elif ! git -C "$CONFIG_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo '  deployment metadata: not a Git checkout'
+  elif [[ ! -e "$CONFIG_ROOT/flake.lock" ]]; then
+    echo '  deployment metadata: flake.lock is missing'
+  elif [[ ! -r "$CONFIG_ROOT/flake.lock" ]]; then
+    echo '  deployment metadata: requires root (flake.lock is not readable)'
+  elif [[ -z $(lock_node_from "$CONFIG_ROOT/flake.lock") ]]; then
+    echo "  deployment metadata: nixdb input '$INPUT_NAME' is missing"
   else
-    echo '  deployment Git/flake input: unavailable (read-only commands still work)'
+    echo '  deployment metadata: PASS'
   fi
   for command in jq systemctl findmnt xfs_quota nix nixos-rebuild git flock; do
     if ! command -v "$command" >/dev/null 2>&1; then
@@ -805,6 +1191,7 @@ cmd_doctor() {
 
 resolve_plan_target() {
   local requested=${1:---latest}
+  candidate_input_url=""
   case "$requested" in
     --latest)
       plan_ref=$(latest_stable_tag || true)
@@ -822,6 +1209,21 @@ resolve_plan_target() {
       plan_label=$requested
       ;;
   esac
+  candidate_input_url="${INPUT_URL}/${plan_ref}"
+}
+
+validate_input_url() {
+  local value=$1
+  [[ -n "$value" && ${#value} -le 4096 && "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
+    || die 'candidate input URL must be a non-empty single-line flake reference'
+}
+
+resolve_direct_candidate() {
+  local input_url=$1
+  validate_input_url "$input_url"
+  plan_ref=direct
+  plan_label="direct input $input_url"
+  candidate_input_url=$input_url
 }
 
 evaluate_candidate_manifest() {
@@ -840,10 +1242,16 @@ evaluate_candidate_manifest() {
 }
 
 prepare_candidate() {
-  local target_ref=$1 candidate_root
+  local target_ref=${1:-} candidate_root
   require_deployment_repo
   require_clean
-  validate_ref "$target_ref"
+  if [[ -n "$target_ref" && -z "$candidate_input_url" ]]; then
+    validate_ref "$target_ref"
+    plan_ref=$target_ref
+    plan_label=$target_ref
+    candidate_input_url="${INPUT_URL}/${target_ref}"
+  fi
+  [[ -n "$candidate_input_url" ]] || die 'candidate input URL was not resolved'
   work_tmp=$(mktemp -d "${TMPDIR:-/tmp}/nixdb-candidate.XXXXXX")
   chmod 0700 "$work_tmp"
   candidate_root="$work_tmp/host"
@@ -852,14 +1260,14 @@ prepare_candidate() {
   [[ -f "$candidate_root/flake.lock" ]] || die 'tracked host source does not contain flake.lock'
   (
     cd "$candidate_root"
-    nix flake lock --override-input "$INPUT_NAME" "${INPUT_URL}/${target_ref}"
+    nix flake lock --override-input "$INPUT_NAME" "$candidate_input_url"
   )
   evaluate_candidate_manifest "$candidate_root"
   candidate_lock="$candidate_root/flake.lock"
-  candidate_revision=$(locked_input_field_from "$candidate_lock" rev)
-  candidate_input=$(locked_input_json_from "$candidate_lock")
+  candidate_input_metadata=$(input_metadata_json_from "$candidate_lock")
+  candidate_revision=$(jq -r '.lockedRevision // "unavailable"' <<<"$candidate_input_metadata")
   current_manifest=$(active_version_manifest)
-  current_input=$(locked_input_json_from "$CONFIG_ROOT/flake.lock")
+  current_input=$(input_metadata_json_from "$CONFIG_ROOT/flake.lock")
   db_upgrade_detected=false
   for engine in mongodb mysql manticore; do
     if [[ $(jq -r --arg engine "$engine" '.versions[$engine]' <<<"$current_manifest") \
@@ -874,13 +1282,16 @@ prepare_candidate() {
 }
 
 print_plan() {
-  local engine label current target
+  local engine label current target current_configured candidate_configured
+  current_configured=$(jq -c .configuredInput <<<"$current_input" | configured_input_description)
+  candidate_configured=$(jq -c .configuredInput <<<"$candidate_input_metadata" | configured_input_description)
   cat <<EOF
 nixdb deployment plan
   current nixdb:  $(jq -r '.framework.version + " (" + .framework.revision + ")"' <<<"$current_manifest")
   target nixdb:   $(jq -r '.framework.version + " (" + .framework.revision + ")"' <<<"$candidate_manifest")
   target ref:     $plan_label
   target revision: $candidate_revision
+  target release:  $(resolved_release_description "$candidate_input_metadata")
 
 Database software versions
 EOF
@@ -905,14 +1316,44 @@ EOF
   else
     echo '  Deployment allowed by default: yes'
   fi
-  echo "  Current flake input:  $current_input"
-  echo "  Candidate flake input: $candidate_input"
+  echo "  Current configured input:   $current_configured"
+  echo "  Current locked revision:    $(jq -r '.lockedRevision // "unavailable"' <<<"$current_input")"
+  echo "  Current resolved release:   $(resolved_release_description "$current_input")"
+  echo "  Candidate configured input: $candidate_configured"
+  echo "  Candidate locked revision:  $candidate_revision"
+  echo "  Candidate resolved release: $(resolved_release_description "$candidate_input_metadata")"
 }
 
 cmd_plan() {
-  [[ $# -le 1 ]] || die "usage: nixdb plan [--latest|--main|<tag-or-revision>]"
-  resolve_plan_target "${1:---latest}"
-  prepare_candidate "$plan_ref"
+  local requested=--latest direct_input=""
+  while (($#)); do
+    case "$1" in
+      --latest|--main)
+        [[ "$requested" == --latest ]] || die 'usage: nixdb plan [--latest|--main|<tag-or-revision>] [--input-url <flake-ref>]'
+        requested=$1
+        ;;
+      --input-url)
+        [[ $# -ge 2 && -z "$direct_input" ]] \
+          || die 'usage: nixdb plan [--latest|--main|<tag-or-revision>] [--input-url <flake-ref>]'
+        direct_input=$2
+        shift
+        ;;
+      --*) die 'usage: nixdb plan [--latest|--main|<tag-or-revision>] [--input-url <flake-ref>]' ;;
+      *)
+        [[ "$requested" == --latest ]] || die 'usage: nixdb plan [--latest|--main|<tag-or-revision>] [--input-url <flake-ref>]'
+        requested=$1
+        ;;
+    esac
+    shift
+  done
+  if [[ -n "$direct_input" ]]; then
+    [[ "$requested" == --latest ]] \
+      || die 'a direct --input-url candidate cannot be combined with a ref'
+    resolve_direct_candidate "$direct_input"
+  else
+    resolve_plan_target "$requested"
+  fi
+  prepare_candidate
   print_plan
 }
 
@@ -994,7 +1435,10 @@ record_generation_state() {
 
 write_deployment_state() {
   local system_path=$1 host_revision=$2 manifest_data=$3 upgrade=$4
-  local previous_system=$5 previous_generation=$6 previous_revision=$7 temp
+  local previous_system=$5 previous_generation=$6 previous_revision=$7 temp input lock_revision lock_hash
+  input=$(input_metadata_json_from "$CONFIG_ROOT/flake.lock")
+  lock_revision=$(jq -r '.lockedRevision // empty' <<<"$input")
+  lock_hash=$(sha256sum "$CONFIG_ROOT/flake.lock" | awk '{print $1}')
   install -d -m 0700 "$STATE_DIR"
   temp=$(mktemp "$STATE_DIR/.deployment-state.XXXXXX")
   jq -cn \
@@ -1003,14 +1447,22 @@ write_deployment_state() {
     --arg hostRevision "$host_revision" \
     --arg frameworkVersion "$(jq -r .framework.version <<<"$manifest_data")" \
     --arg frameworkRevision "$(jq -r .framework.revision <<<"$manifest_data")" \
+    --arg lockRevision "$lock_revision" \
+    --arg lockHash "$lock_hash" \
     --arg timestamp "$(date --iso-8601=seconds)" \
     --arg previousSystem "$previous_system" \
     --arg previousGeneration "$previous_generation" \
     --arg previousHostRevision "$previous_revision" \
+    --argjson configuredInput "$(jq -c .configuredInput <<<"$input")" \
+    --argjson resolvedRelease "$(jq -c .resolvedRelease <<<"$input")" \
+    --arg resolvedReleaseState "$(jq -r .resolvedReleaseState <<<"$input")" \
     --argjson dbVersions "$(db_versions_from_manifest "$manifest_data")" \
     --argjson dbUpgradeOccurred "$upgrade" \
-    '{schemaVersion:1,system:$system,generation:$generation,hostRevision:$hostRevision,
-      framework:{version:$frameworkVersion,revision:$frameworkRevision},dbVersions:$dbVersions,
+    '{schemaVersion:2,system:$system,generation:$generation,hostRevision:$hostRevision,
+      framework:{version:$frameworkVersion,revision:$frameworkRevision,
+        resolvedRelease:$resolvedRelease,resolvedReleaseState:$resolvedReleaseState},
+      source:{configuredInput:$configuredInput,lockRevision:(if $lockRevision == "" then null else $lockRevision end),
+        lockSha256:$lockHash},dbVersions:$dbVersions,
       timestamp:$timestamp,dbUpgradeOccurred:$dbUpgradeOccurred,
       previous:{system:$previousSystem,generation:$previousGeneration,hostRevision:$previousHostRevision}}' >"$temp"
   chmod 0600 "$temp"
@@ -1047,7 +1499,8 @@ transaction_failure() {
   trap - ERR INT TERM
   set +e
   echo >&2
-  echo "nixdb: deployment failed (exit $rc); starting recovery" >&2
+  echo "nixdb: FAILED at phase: $deployment_phase (exit $rc); starting recovery" >&2
+  echo 'nixdb: restoring source checkout ...' >&2
   restore_source_checkout >&2
   if git -C "$CONFIG_ROOT" diff --quiet --exit-code \
     && [[ -z $(git -C "$CONFIG_ROOT" status --porcelain --untracked-files=all) ]]; then
@@ -1055,18 +1508,20 @@ transaction_failure() {
   fi
   if ((tx_activation_started)); then
     runtime_status=failed
+    echo "nixdb: restoring generation $tx_old_generation ..." >&2
     nix-env --switch-generation "$tx_old_generation" -p "$SYSTEM_PROFILE" >&2 \
       && "$tx_old_system/bin/switch-to-configuration" switch >&2 \
       && runtime_status=restored
   fi
   if [[ "$runtime_status" == restored || "$runtime_status" == not-needed ]]; then
+    echo 'nixdb: recovery health ...' >&2
     if [[ -x "$tx_old_system/sw/bin/nixdb" ]] && "$tx_old_system/sw/bin/nixdb" health >&2; then
       health_status=PASS
     else
       health_status=FAILED
     fi
   fi
-  echo "nixdb: recovery summary: source=$source_status runtime=$runtime_status health=$health_status" >&2
+  echo "nixdb: final recovery state: source=$source_status runtime=$runtime_status health=$health_status" >&2
   if [[ "$source_status" != restored || "$runtime_status" == failed || "$health_status" == FAILED ]]; then
     echo 'nixdb: CRITICAL: automatic recovery was incomplete' >&2
   fi
@@ -1085,6 +1540,8 @@ disarm_transaction_traps() {
 
 deploy_candidate() {
   local allow_upgrade=$1 old_manifest old_input new_input new_system new_commit
+  tx_activation_started=0
+  deployment_phase='compare DB versions'
   enforce_db_upgrade_guard "$allow_upgrade"
   old_manifest=$(active_version_manifest)
   tx_old_commit=$(git -C "$CONFIG_ROOT" rev-parse --verify HEAD)
@@ -1108,28 +1565,36 @@ nixdb deployment
   DB upgrade allowed: $allow_upgrade
 EOF
 
-  tx_lock_temp="$CONFIG_ROOT/.flake.lock.nixdb.$$"
-  install -m 0644 "$candidate_lock" "$tx_lock_temp"
-  mv -f -- "$tx_lock_temp" "$CONFIG_ROOT/flake.lock"
-  tx_lock_temp=""
-
-  echo '==> nix flake check'
-  nix flake check "$CONFIG_ROOT"
-  echo '==> nixos-rebuild build'
-  nixos-rebuild build --flake "$CONFIG_ROOT#$FLAKE_HOST"
+  echo '[1/8] Resolve candidate: PASS (private worktree)'
+  echo '[2/8] Compare DB versions: PASS'
+  deployment_phase='check flake'
+  echo '[3/8] Check candidate flake'
+  nix flake check "$work_tmp/host"
+  deployment_phase='build candidate'
+  echo '[4/8] Build candidate'
+  nixos-rebuild build --flake "$work_tmp/host#$FLAKE_HOST"
 
   # This assignment is deliberately immediately before test activation. The
   # DB-version guard above must always run before this point.
   tx_activation_started=1
-  echo '==> nixos-rebuild test'
-  nixos-rebuild test --flake "$CONFIG_ROOT#$FLAKE_HOST"
-  echo '==> post-test health'
+  deployment_phase='test candidate'
+  echo '[5/8] Test candidate'
+  nixos-rebuild test --flake "$work_tmp/host#$FLAKE_HOST"
+  deployment_phase='validate test health'
+  echo '[6/8] Validate test health'
   active_system_health
-  echo '==> nixos-rebuild switch'
-  nixos-rebuild switch --flake "$CONFIG_ROOT#$FLAKE_HOST"
-  echo '==> post-switch health'
+  deployment_phase='activate candidate'
+  echo '[7/8] Activate candidate'
+  nixos-rebuild switch --flake "$work_tmp/host#$FLAKE_HOST"
+  deployment_phase='validate active health'
+  echo '[8/8] Validate active health'
   active_system_health
 
+  deployment_phase='commit downstream source'
+  tx_lock_temp="$CONFIG_ROOT/.flake.lock.nixdb.$$"
+  install -m 0644 "$candidate_lock" "$tx_lock_temp"
+  mv -f -- "$tx_lock_temp" "$CONFIG_ROOT/flake.lock"
+  tx_lock_temp=""
   new_system=$(readlink -f "$CURRENT_SYSTEM")
   if ! git -C "$CONFIG_ROOT" diff --quiet -- flake.lock; then
     git -C "$CONFIG_ROOT" add -- flake.lock
@@ -1137,6 +1602,7 @@ EOF
   fi
   new_commit=$(git -C "$CONFIG_ROOT" rev-parse --verify HEAD)
   record_generation_state "$new_system" "$new_commit" "$candidate_manifest" "$db_upgrade_detected"
+  deployment_phase='write deployment state'
   write_deployment_state "$new_system" "$new_commit" "$candidate_manifest" "$db_upgrade_detected" \
     "$tx_old_system" "$tx_old_generation" "$tx_old_commit"
   require_clean
@@ -1169,21 +1635,32 @@ cmd_update() {
 }
 
 cmd_deploy() {
-  local requested="" allow_db_upgrade=false
+  local requested="" allow_db_upgrade=false direct_input=""
   while (($#)); do
     case "$1" in
       --allow-db-upgrade) allow_db_upgrade=true ;;
-      --*) die 'usage: nixdb deploy <tag-or-revision> [--allow-db-upgrade]' ;;
+      --input-url)
+        [[ $# -ge 2 && -z "$direct_input" ]] \
+          || die 'usage: nixdb deploy <tag-or-revision> [--allow-db-upgrade] | nixdb deploy --input-url <flake-ref> [--allow-db-upgrade]'
+        direct_input=$2
+        shift
+        ;;
+      --*) die 'usage: nixdb deploy <tag-or-revision> [--allow-db-upgrade] | nixdb deploy --input-url <flake-ref> [--allow-db-upgrade]' ;;
       *)
-        [[ -z "$requested" ]] || die 'usage: nixdb deploy <tag-or-revision> [--allow-db-upgrade]'
+        [[ -z "$requested" ]] || die 'usage: nixdb deploy <tag-or-revision> [--allow-db-upgrade] | nixdb deploy --input-url <flake-ref> [--allow-db-upgrade]'
         requested=$1
         ;;
     esac
     shift
   done
-  [[ -n "$requested" ]] || die 'usage: nixdb deploy <tag-or-revision> [--allow-db-upgrade]'
-  resolve_plan_target "$requested"
-  prepare_candidate "$plan_ref"
+  if [[ -n "$direct_input" ]]; then
+    [[ -z "$requested" ]] || die 'a direct --input-url candidate cannot be combined with a ref'
+    resolve_direct_candidate "$direct_input"
+  else
+    [[ -n "$requested" ]] || die 'usage: nixdb deploy <tag-or-revision> [--allow-db-upgrade] | nixdb deploy --input-url <flake-ref> [--allow-db-upgrade]'
+    resolve_plan_target "$requested"
+  fi
+  prepare_candidate
   print_plan
   deploy_candidate "$allow_db_upgrade"
 }
@@ -1297,32 +1774,100 @@ EOF
   echo "  Source revision:   $(git -C "$CONFIG_ROOT" rev-parse --verify HEAD)"
 }
 
+validate_config_root() {
+  [[ "$1" == /* && "$1" != *$'\n'* && "$1" != *$'\r'* ]] \
+    || die '--config-root must be an absolute single-line path'
+}
+
+validate_flake_host() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] \
+    || die '--flake-host contains unsupported characters'
+}
+
+validate_input_name() {
+  [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] \
+    || die '--input-name contains unsupported characters'
+}
+
+parse_global_context() {
+  CLI_REMAINING=("$@")
+  while ((${#CLI_REMAINING[@]})); do
+    case "${CLI_REMAINING[0]}" in
+      --config-root)
+        ((${#CLI_REMAINING[@]} >= 2)) || die 'usage: nixdb --config-root <path> <command>'
+        validate_config_root "${CLI_REMAINING[1]}"
+        CONFIG_ROOT=${CLI_REMAINING[1]}
+        CLI_REMAINING=("${CLI_REMAINING[@]:2}")
+        ;;
+      --flake-host)
+        ((${#CLI_REMAINING[@]} >= 2)) || die 'usage: nixdb --flake-host <host> <command>'
+        validate_flake_host "${CLI_REMAINING[1]}"
+        FLAKE_HOST=${CLI_REMAINING[1]}
+        CLI_REMAINING=("${CLI_REMAINING[@]:2}")
+        ;;
+      --input-name)
+        ((${#CLI_REMAINING[@]} >= 2)) || die 'usage: nixdb --input-name <name> <command>'
+        validate_input_name "${CLI_REMAINING[1]}"
+        INPUT_NAME=${CLI_REMAINING[1]}
+        CLI_REMAINING=("${CLI_REMAINING[@]:2}")
+        ;;
+      *) break ;;
+    esac
+  done
+}
+
+plan_requires_root() {
+  is_root && return 1
+  if [[ ! -d "$CONFIG_ROOT" || ! -r "$CONFIG_ROOT" || ! -x "$CONFIG_ROOT" ]]; then
+    return 0
+  fi
+  if git -C "$CONFIG_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    [[ -e "$CONFIG_ROOT/flake.lock" && ! -r "$CONFIG_ROOT/flake.lock" ]] && return 0
+    return 1
+  fi
+  # An inaccessible .git is the common case for a root-owned NixOS checkout.
+  # If no Git metadata exists at all, keep the useful non-Git diagnostic and
+  # do not ask for sudo merely to report it.
+  [[ -e "$CONFIG_ROOT/.git" ]]
+}
+
+maybe_elevate_plan() {
+  if plan_requires_root; then
+    need_root "$@"
+  fi
+}
+
 main() {
-  local command=${1:-help}
+  local -a original_args=("$@")
+  local command
+  parse_global_context "$@"
+  command=${CLI_REMAINING[0]:-help}
   if [[ "$command" == help || "$command" == --help || "$command" == -h ]]; then
     show_help
     return
   fi
-  shift || true
+  CLI_REMAINING=("${CLI_REMAINING[@]:1}")
   case "$command" in
-    health|quotas|logs|restart|update|deploy|rollback)
-      need_root "$command" "$@"
+    health|quotas|logs|restart|wait|update|deploy|rollback)
+      need_root "${original_args[@]}"
       ;;
+    plan) maybe_elevate_plan "${original_args[@]}" ;;
   esac
   case "$command" in
-    status) [[ $# -le 1 ]] || die 'usage: nixdb status [--json]'; cmd_status "$@" ;;
-    health) [[ $# -eq 0 ]] || die 'usage: nixdb health'; run_health ;;
-    doctor) [[ $# -eq 0 ]] || die 'usage: nixdb doctor'; cmd_doctor ;;
-    versions) [[ $# -le 1 ]] || die 'usage: nixdb versions [--json]'; cmd_versions "$@" ;;
-    quotas) [[ $# -eq 0 ]] || die 'usage: nixdb quotas'; cmd_quotas ;;
-    resources) [[ $# -eq 0 ]] || die 'usage: nixdb resources'; cmd_resources ;;
-    config) [[ $# -eq 0 ]] || die 'usage: nixdb config'; cmd_config ;;
-    logs) cmd_logs "$@" ;;
-    restart) cmd_restart "$@" ;;
-    plan) cmd_plan "$@" ;;
-    update) acquire_deployment_lock; cmd_update "$@" ;;
-    deploy) acquire_deployment_lock; cmd_deploy "$@" ;;
-    rollback) acquire_deployment_lock; cmd_rollback "$@" ;;
+    status) [[ ${#CLI_REMAINING[@]} -le 1 ]] || die 'usage: nixdb status [--json]'; cmd_status "${CLI_REMAINING[@]}" ;;
+    health) [[ ${#CLI_REMAINING[@]} -eq 0 ]] || die 'usage: nixdb health'; run_health ;;
+    wait) cmd_wait "${CLI_REMAINING[@]}" ;;
+    doctor) [[ ${#CLI_REMAINING[@]} -eq 0 ]] || die 'usage: nixdb doctor'; cmd_doctor ;;
+    versions) [[ ${#CLI_REMAINING[@]} -le 1 ]] || die 'usage: nixdb versions [--json]'; cmd_versions "${CLI_REMAINING[@]}" ;;
+    quotas) [[ ${#CLI_REMAINING[@]} -eq 0 ]] || die 'usage: nixdb quotas'; cmd_quotas ;;
+    resources) [[ ${#CLI_REMAINING[@]} -eq 0 ]] || die 'usage: nixdb resources'; cmd_resources ;;
+    config) [[ ${#CLI_REMAINING[@]} -eq 0 ]] || die 'usage: nixdb config'; cmd_config ;;
+    logs) cmd_logs "${CLI_REMAINING[@]}" ;;
+    restart) cmd_restart "${CLI_REMAINING[@]}" ;;
+    plan) cmd_plan "${CLI_REMAINING[@]}" ;;
+    update) acquire_deployment_lock; cmd_update "${CLI_REMAINING[@]}" ;;
+    deploy) acquire_deployment_lock; cmd_deploy "${CLI_REMAINING[@]}" ;;
+    rollback) acquire_deployment_lock; cmd_rollback "${CLI_REMAINING[@]}" ;;
     *) die "unknown command: $command (run 'nixdb help')" ;;
   esac
 }

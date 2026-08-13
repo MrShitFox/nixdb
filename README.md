@@ -32,7 +32,7 @@ before adopting it.
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixdb.url = "github:MrShitFox/nixdb/v0.2.1";
+    nixdb.url = "github:MrShitFox/nixdb/v0.2.2";
   };
 
   outputs = { nixpkgs, nixdb, ... }: {
@@ -172,6 +172,8 @@ root-only file. Passwords never appear in the manifest or CLI output.
 sudo nixdb status
 sudo nixdb status --json
 sudo nixdb health
+sudo nixdb wait
+sudo nixdb wait mongo-example --timeout 90
 sudo nixdb doctor
 sudo nixdb versions
 sudo nixdb quotas
@@ -181,16 +183,18 @@ sudo nixdb logs mongo-example
 sudo nixdb restart mongo-example
 sudo nixdb plan
 sudo nixdb plan --main
-sudo nixdb plan v0.2.1
+sudo nixdb plan v0.2.2
 sudo nixdb update
 sudo nixdb update --main
-sudo nixdb deploy v0.2.1
+sudo nixdb deploy v0.2.2
 sudo nixdb rollback
 ```
 
 Read-only commands use the runtime manifest and continue to work when the host
 configuration is not a Git checkout. Deployment commands intentionally require
-a clean Git checkout.
+a clean Git checkout. `plan` is itself non-mutating, but automatically uses
+`sudo` when a root-owned deployment checkout needs it; a readable checkout is
+planned without escalation.
 
 `nixdb plan` evaluates the candidate in a private temporary copy and never
 changes the host lock or activates services. `nixdb update` accepts only the
@@ -207,6 +211,41 @@ sudo nixdb deploy v0.3.0 --allow-db-upgrade
 The updater changes only the downstream input named `nixdb`; it never performs
 a general flake update. Mutating deployment operations are serialized and use
 transaction recovery. See [operations](docs/operations.md).
+
+### Target-version bootstrap upgrades
+
+An installed older CLI cannot contain safety improvements added by a future
+release. The public flake therefore exports the same CLI as both a package and
+an app:
+
+```console
+nix build github:MrShitFox/nixdb/v0.2.2#nixdb
+nix run github:MrShitFox/nixdb/v0.2.2#nixdb -- help
+```
+
+To upgrade a legacy host using the target release's deployment code, run that
+same app with an explicit downstream context. These flags are command-line
+context, not privileged environment overrides:
+
+```console
+sudo nix run github:MrShitFox/nixdb/v0.2.2#nixdb -- \
+  --config-root /etc/nixos --flake-host db-host --input-name nixdb \
+  deploy v0.2.2
+```
+
+For an unpublished development candidate, substitute an immutable local flake
+reference and make the downstream input point to it only through the candidate
+transaction:
+
+```console
+sudo nix run path:/srv/nixdb-v0.2.2#nixdb -- \
+  --config-root /etc/nixos --flake-host db-host --input-name nixdb \
+  deploy --input-url path:/srv/nixdb-v0.2.2
+```
+
+This is not a second updater: it is exactly the CLI that the target NixOS
+module installs. `--input-url` is explicit and is intended for local/bootstrap
+testing; normal public upgrades should use a stable tag.
 
 ## Adding an instance or engine
 
