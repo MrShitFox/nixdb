@@ -240,7 +240,7 @@ test_redis_info_and_config_normalization() (
     case "$*" in
       PING) printf 'PONG\n' ;;
       'INFO server') printf 'redis_version:8.10.0\r\n' ;;
-      '--raw CONFIG GET maxmemory') printf 'maxmemory\n1073741824\r\n' ;;
+      '--raw CONFIG GET maxmemory') printf 'maxmemory\n1000000000\r\n' ;;
       '--raw CONFIG GET maxmemory-policy') printf 'maxmemory-policy\nallkeys-lru\r\n' ;;
       '--raw MODULE LIST') printf 'bf\r\nsearch\r\nReJSON\r\ntimeseries\r\n' ;;
       *) return 1 ;;

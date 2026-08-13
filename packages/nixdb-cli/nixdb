@@ -879,6 +879,23 @@ size_bytes() {
   numfmt --from=iec "${1^^}"
 }
 
+redis_size_bytes() {
+  local value=${1^^} amount suffix factor
+  [[ "$value" =~ ^([0-9]+)([KMGTPE]?)$ ]] || die "invalid Redis size: $1"
+  amount=${BASH_REMATCH[1]}
+  suffix=${BASH_REMATCH[2]}
+  case "$suffix" in
+    '') factor=1 ;;
+    K) factor=1000 ;;
+    M) factor=1000000 ;;
+    G) factor=1000000000 ;;
+    T) factor=1000000000000 ;;
+    P) factor=1000000000000000 ;;
+    E) factor=1000000000000000000 ;;
+  esac
+  echo $((amount * factor))
+}
+
 size_kib() {
   local bytes
   bytes=$(size_bytes "$1")
@@ -1146,7 +1163,7 @@ probe_redis_ready() {
     return 1
   }
   maxmemory=$(redis_config_value "$name" maxmemory)
-  [[ "$maxmemory" == "$(size_bytes "$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMemoryLimit')")" ]] || {
+  [[ "$maxmemory" == "$(redis_size_bytes "$(instances_json | jq -r --arg name "$name" '.[] | select(.name == $name) | .engineMemoryLimit')")" ]] || {
     echo "Redis effective maxmemory differs from manifest: $maxmemory" >&2
     return 1
   }
