@@ -417,21 +417,78 @@ source_checkout_json() {
   fi
 }
 
+deployment_state_valid() {
+  local path=$1
+  jq -e '
+    def nonempty_string: type == "string" and length > 0;
+    def generation: type == "string" and test("^[1-9][0-9]*$");
+    def deployment:
+      (.system | nonempty_string)
+      and (.generation | generation)
+      and (.hostRevision | nonempty_string)
+      and (.framework | type == "object"
+          and (.version | nonempty_string)
+          and (.revision | nonempty_string))
+      and (.dbVersions | type == "object")
+      and (.timestamp | nonempty_string)
+      and (.dbUpgradeOccurred | type == "boolean")
+      and (.previous | type == "object"
+          and (.system | nonempty_string)
+          and (.generation | generation)
+          and (.hostRevision | nonempty_string));
+
+    if .schemaVersion == 1 then
+      deployment
+    elif .schemaVersion == 2 then
+      deployment
+      and (.framework | (.resolvedRelease == null or (.resolvedRelease | nonempty_string))
+          and (.resolvedReleaseState | nonempty_string))
+      and (.source | type == "object"
+          and (.configuredInput == null or (.configuredInput | type == "object"))
+          and (.lockRevision == null or (.lockRevision | nonempty_string))
+          and (.lockSha256 | type == "string" and test("^[0-9a-f]{64}$")))
+    else
+      false
+    end
+  ' "$path" >/dev/null 2>&1
+}
+
+deployment_state_diagnostic() {
+  local path=$1
+  if [[ ! -e "$path" ]]; then
+    echo 'deployment state is absent'
+  elif [[ ! -r "$path" ]]; then
+    echo 'deployment state requires root access'
+  elif ! jq -e 'type == "object"' "$path" >/dev/null 2>&1; then
+    echo 'deployment state is malformed JSON'
+  elif ! jq -e '(.schemaVersion == 1 or .schemaVersion == 2)' "$path" >/dev/null 2>&1; then
+    echo 'deployment state uses an unsupported schema version'
+  elif ! deployment_state_valid "$path"; then
+    echo 'deployment state is invalid or incomplete'
+  else
+    echo 'deployment state is unavailable'
+  fi
+}
+
+deployment_state_current_json() {
+  local path=$1
+  deployment_state_valid "$path" || return 1
+  jq -ce '{system,generation,hostRevision}' "$path"
+}
+
+deployment_state_previous_json() {
+  local path=$1
+  deployment_state_valid "$path" || return 1
+  jq -ce '.previous | {system,generation,hostRevision}' "$path"
+}
+
 deployment_state_json() {
   local path="$STATE_DIR/deployment-state.json"
   if [[ ! -e "$path" ]]; then
     jq -cn '{availability:"absent",record:null}'
   elif [[ ! -r "$path" ]]; then
     jq -cn '{availability:"requires root",record:null}'
-  elif jq -e '
-      (.schemaVersion == 1 or .schemaVersion == 2)
-      and (.system | type == "string")
-      and (.generation | type == "string")
-      and (.hostRevision | type == "string")
-      and (.framework | type == "object")
-      and (.dbVersions | type == "object")
-      and (.previous | type == "object")
-    ' "$path" >/dev/null 2>&1; then
+  elif deployment_state_valid "$path"; then
     jq -cn --argjson record "$(cat "$path")" '{availability:"valid",record:$record}'
   else
     jq -cn '{availability:"invalid",record:null}'
@@ -1706,29 +1763,36 @@ restore_rollback_failure() {
 }
 
 select_rollback_target() {
-  local old_system=$1 old_generation=$2 state recorded_generation recorded_system profile_system
+  local old_system=$1 old_generation=$2 state current previous recorded_generation
+  local recorded_system profile_system fallback_reason
   state="$STATE_DIR/deployment-state.json"
-  if [[ -r "$state" ]] \
-    && jq -e --arg system "$old_system" '
-      .schemaVersion == 1 and .system == $system
-      and (.previous.generation | type == "string")
-      and (.previous.system | type == "string")
-    ' "$state" >/dev/null 2>&1; then
-    recorded_generation=$(jq -r .previous.generation "$state")
-    recorded_system=$(jq -r .previous.system "$state")
-    profile_system=$(readlink -f "${SYSTEM_PROFILE}-${recorded_generation}-link" 2>/dev/null || true)
-    if [[ -n "$profile_system" && "$profile_system" == "$recorded_system" ]]; then
-      previous_generation=$recorded_generation
-      previous_system=$recorded_system
-      return
+  if current=$(deployment_state_current_json "$state" 2>/dev/null); then
+    if [[ $(jq -r .system <<<"$current") == "$old_system" ]]; then
+      previous=$(deployment_state_previous_json "$state")
+      recorded_generation=$(jq -r .generation <<<"$previous")
+      recorded_system=$(jq -r .system <<<"$previous")
+      profile_system=$(readlink -f "${SYSTEM_PROFILE}-${recorded_generation}-link" 2>/dev/null || true)
+      if [[ -n "$profile_system" && "$profile_system" == "$recorded_system" ]]; then
+        previous_generation=$recorded_generation
+        previous_system=$recorded_system
+        return
+      fi
+      fallback_reason='recorded previous deployment target is unavailable or no longer matches its system path'
+    else
+      fallback_reason='recorded deployment state does not describe the active system'
     fi
-    warn 'recorded previous generation is unavailable or no longer matches its system path'
+  else
+    fallback_reason=$(deployment_state_diagnostic "$state")
   fi
 
+  warn "exact recorded nixdb rollback target unavailable ($fallback_reason); falling back to previous NixOS generation"
+  [[ "$old_generation" =~ ^[1-9][0-9]*$ ]] || die 'cannot determine a valid current NixOS generation'
   previous_generation=$(nix-env --list-generations -p "$SYSTEM_PROFILE" \
-    | awk -v current="$old_generation" '$1 < current { previous=$1 } END { print previous }')
+    | awk -v current="$old_generation" '$1 ~ /^[1-9][0-9]*$/ && $1 < current { previous=$1 } END { print previous }')
   [[ -n "$previous_generation" ]] || die 'no previous NixOS generation is available'
   previous_system=$(readlink -f "${SYSTEM_PROFILE}-${previous_generation}-link")
+  [[ -n "$previous_system" && -d "$previous_system" ]] \
+    || die "previous NixOS generation $previous_generation is unavailable"
 }
 
 cmd_rollback() {
