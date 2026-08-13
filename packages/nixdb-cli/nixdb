@@ -722,6 +722,16 @@ run_health() {
   echo 'nixdb health: PASS'
 }
 
+active_system_health() {
+  local active_system
+  active_system=$(readlink -f "$CURRENT_SYSTEM")
+  if [[ ! -x "$active_system/sw/bin/nixdb" ]]; then
+    echo "nixdb: active system has no nixdb CLI: $active_system" >&2
+    return 1
+  fi
+  "$active_system/sw/bin/nixdb" health
+}
+
 cmd_restart() {
   [[ $# -eq 1 ]] || die "usage: nixdb restart <instance>"
   validate_instance "$1"
@@ -1093,11 +1103,11 @@ EOF
   echo '==> nixos-rebuild test'
   nixos-rebuild test --flake "$CONFIG_ROOT#$FLAKE_HOST"
   echo '==> post-test health'
-  run_health
+  active_system_health
   echo '==> nixos-rebuild switch'
   nixos-rebuild switch --flake "$CONFIG_ROOT#$FLAKE_HOST"
   echo '==> post-switch health'
-  run_health
+  active_system_health
 
   new_system=$(readlink -f "$CURRENT_SYSTEM")
   if ! git -C "$CONFIG_ROOT" diff --quiet -- flake.lock; then
@@ -1234,7 +1244,7 @@ EOF
   else
     warn "source mapping unavailable; leaving checkout at $old_commit"
   fi
-  run_health
+  active_system_health
   trap - ERR INT TERM
   echo 'nixdb: rollback succeeded'
   echo "  Active generation: $(current_generation)"

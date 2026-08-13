@@ -348,6 +348,22 @@ test_non_git_health() (
 test_non_git_health || fail 'health retains an accidental Git dependency'
 pass 'health consumes runtime files and does not require Git'
 
+active_health_system="$test_root/active-health-system"
+mkdir -p "$active_health_system/sw/bin"
+cat >"$active_health_system/sw/bin/nixdb" <<'EOF'
+#!/bin/sh
+printf 'target-generation-health\n'
+EOF
+chmod +x "$active_health_system/sw/bin/nixdb"
+ln -s "$active_health_system" "$test_root/active-health-link"
+test_active_generation_health() (
+  export NIXDB_CURRENT_SYSTEM="$test_root/active-health-link"
+  source_cli "$manifest" "$test_root/non-git"
+  [[ $(active_system_health) == target-generation-health ]]
+)
+test_active_generation_health || fail 'post-activation health did not use the active generation CLI'
+pass 'post-activation and rollback health use the active generation CLI'
+
 lock_path="$test_root/nixdb-deploy.lock"
 test_deployment_lock() (
   source_cli "$manifest" "$test_root/non-git"
