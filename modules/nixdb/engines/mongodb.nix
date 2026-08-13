@@ -277,6 +277,19 @@ in
           port = instance.port;
         }
       ];
+      internalCache = {
+        kind = "WiredTiger cache";
+        value = "${toString instance.cacheGB}G";
+      };
+    }) mongodb;
+
+    services.nixdb._internal.healthCredentials = lib.mapAttrsToList (name: instance: {
+      inherit name;
+      engine = "mongodb";
+      address = instance.bindAddress;
+      username = instance.adminUser;
+      inherit (instance) password;
+      ports.main = instance.port;
     }) mongodb;
 
     nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "mongodb-ce" ];

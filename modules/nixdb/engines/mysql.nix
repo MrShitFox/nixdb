@@ -228,6 +228,20 @@ in
           port = instance.port;
         }
       ];
+      internalCache = {
+        kind = "InnoDB buffer pool";
+        value = instance.bufferPool;
+      };
+      engineMetadata.maxConnections = instance.maxConnections;
+    }) mysql;
+
+    services.nixdb._internal.healthCredentials = lib.mapAttrsToList (name: instance: {
+      inherit name;
+      engine = "mysql";
+      address = instance.bindAddress;
+      username = instance.adminUser;
+      inherit (instance) password;
+      ports.main = instance.port;
     }) mysql;
 
     environment.systemPackages = [ mysqlPkg ];

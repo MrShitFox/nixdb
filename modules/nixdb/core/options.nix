@@ -100,9 +100,57 @@ in
               type = sizeType;
               default = "0";
             };
+            internalCache = mkOption {
+              default = null;
+              description = "Sanitized engine cache/buffer metadata for operators.";
+              type = types.nullOr (
+                types.submodule {
+                  options = {
+                    kind = mkOption { type = types.nonEmptyStr; };
+                    value = mkOption { type = types.nonEmptyStr; };
+                  };
+                }
+              );
+            };
+            engineMetadata = mkOption {
+              type = types.attrsOf (
+                types.oneOf [
+                  types.bool
+                  types.int
+                  types.str
+                ]
+              );
+              default = { };
+              description = "Sanitized engine-specific operator metadata.";
+            };
           };
         }
       );
+    };
+
+    _internal.healthCredentials = mkOption {
+      internal = true;
+      default = [ ];
+      description = "Root-only normalized credentials used by health probes.";
+      type = types.listOf (
+        types.submodule {
+          options = {
+            name = mkOption { type = types.nonEmptyStr; };
+            engine = mkOption { type = types.nonEmptyStr; };
+            address = mkOption { type = types.nonEmptyStr; };
+            username = mkOption { type = types.nonEmptyStr; };
+            password = mkOption { type = types.nonEmptyStr; };
+            ports = mkOption { type = types.attrsOf types.port; };
+          };
+        }
+      );
+    };
+
+    _internal.runtimeManifest = mkOption {
+      internal = true;
+      readOnly = true;
+      type = types.attrs;
+      description = "Sanitized evaluated runtime manifest consumed by the operator CLI.";
     };
   };
 }

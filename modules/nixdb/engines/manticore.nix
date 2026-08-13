@@ -251,6 +251,19 @@ in
           port = instance.httpPort + 1;
         }
       ];
+      engineMetadata.buddyHttpsPort = instance.httpPort + 1;
+    }) manticore;
+
+    services.nixdb._internal.healthCredentials = lib.mapAttrsToList (name: instance: {
+      inherit name;
+      engine = "manticore";
+      address = instance.bindAddress;
+      username = instance.adminUser;
+      inherit (instance) password;
+      ports = {
+        sql = instance.sqlPort;
+        http = instance.httpPort;
+      };
     }) manticore;
 
     environment.systemPackages = [ manticorePkg ];
