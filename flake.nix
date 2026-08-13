@@ -15,7 +15,7 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       versions = import ./versions;
       release = {
-        version = "0.2.0";
+        version = "0.2.1";
         revision = self.rev or self.dirtyRev or "unknown";
       };
 
