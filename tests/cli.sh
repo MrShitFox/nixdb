@@ -44,6 +44,20 @@ make_lock() {
       locked:{type:"github",owner:"example",repo:"nixdb",rev:$revision,narHash:"sha256-example"}}},root:"root",version:7}' >"$path"
 }
 
+make_legacy_deployment_state() {
+  local path=$1 system=$2 generation=$3 previous_system=$4 previous_generation=$5
+  jq -n \
+    --arg system "$system" \
+    --arg generation "$generation" \
+    --arg previousSystem "$previous_system" \
+    --arg previousGeneration "$previous_generation" \
+    '{schemaVersion:1,system:$system,generation:$generation,hostRevision:("a"*40),
+      framework:{version:"0.2.1",revision:("b"*40)},
+      dbVersions:{mongodb:"8.2.11",mysql:"8.4.10",manticore:"28.6.6"},
+      timestamp:"2026-08-13T00:00:00+00:00",dbUpgradeOccurred:false,
+      previous:{system:$previousSystem,generation:$previousGeneration,hostRevision:("c"*40)}}' >"$path"
+}
+
 make_repo() {
   local repo=$1
   mkdir -p "$repo"
@@ -506,11 +520,8 @@ target_state="$test_root/target-state"
 mkdir -p "$target_state" "$test_root/recorded-current" "$test_root/recorded-previous" "$test_root/stale-newer"
 ln -s "$test_root/recorded-previous" "$test_root/target-profile-4-link"
 ln -s "$test_root/stale-newer" "$test_root/target-profile-5-link"
-jq -n \
-  --arg system "$test_root/recorded-current" \
-  --arg previousSystem "$test_root/recorded-previous" \
-  '{schemaVersion:1,system:$system,previous:{generation:"4",system:$previousSystem,hostRevision:("a"*40)}}' \
-  >"$target_state/deployment-state.json"
+make_legacy_deployment_state "$target_state/deployment-state.json" \
+  "$test_root/recorded-current" 6 "$test_root/recorded-previous" 4
 test_recorded_rollback_target() (
   export NIXDB_STATE_DIR="$target_state"
   export NIXDB_SYSTEM_PROFILE="$test_root/target-profile"
@@ -520,7 +531,128 @@ test_recorded_rollback_target() (
   [[ "$previous_system" == "$test_root/recorded-previous" ]]
 )
 test_recorded_rollback_target || fail 'rollback selected a stale numerically newer generation'
-pass 'rollback targets the exact recorded pre-deployment generation'
+pass 'legacy schema-v1 state targets the exact recorded pre-deployment generation'
+
+schema_v2_state="$test_root/schema-v2-rollback-state"
+mkdir -p "$schema_v2_state" \
+  "$test_root/schema-v2-current" \
+  "$test_root/schema-v2-recorded-previous" \
+  "$test_root/schema-v2-intermediate-21" \
+  "$test_root/schema-v2-intermediate-22"
+ln -s "$test_root/schema-v2-recorded-previous" "$test_root/schema-v2-profile-20-link"
+ln -s "$test_root/schema-v2-intermediate-21" "$test_root/schema-v2-profile-21-link"
+ln -s "$test_root/schema-v2-intermediate-22" "$test_root/schema-v2-profile-22-link"
+test_schema_v2_recorded_rollback_target() (
+  export NIXDB_STATE_DIR="$schema_v2_state"
+  export NIXDB_SYSTEM_PROFILE="$test_root/schema-v2-profile"
+  source_cli "$manifest" "$rollback_repo"
+  current_generation() { echo 23; }
+  write_deployment_state "$test_root/schema-v2-current" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    "$(cat "$manifest")" false "$test_root/schema-v2-recorded-previous" 20 \
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  [[ $(jq -r .schemaVersion "$schema_v2_state/deployment-state.json") == 2 ]]
+  select_rollback_target "$test_root/schema-v2-current" 23
+  [[ "$previous_generation" == 20 ]]
+  [[ "$previous_system" == "$test_root/schema-v2-recorded-previous" ]]
+)
+test_schema_v2_recorded_rollback_target || fail 'schema-v2 rollback selected an intermediate NixOS generation'
+pass 'schema-v2 state writer selects its exact recorded pre-deployment generation'
+
+fallback_state="$test_root/fallback-state"
+mkdir -p "$fallback_state" \
+  "$test_root/fallback-current" \
+  "$test_root/fallback-old" \
+  "$test_root/fallback-intermediate-21" \
+  "$test_root/fallback-intermediate-22"
+ln -s "$test_root/fallback-old" "$test_root/fallback-profile-20-link"
+ln -s "$test_root/fallback-intermediate-21" "$test_root/fallback-profile-21-link"
+ln -s "$test_root/fallback-intermediate-22" "$test_root/fallback-profile-22-link"
+
+test_rollback_fallback() (
+  export NIXDB_STATE_DIR="$fallback_state"
+  export NIXDB_SYSTEM_PROFILE="$test_root/fallback-profile"
+  source_cli "$manifest" "$rollback_repo"
+  nix-env() {
+    printf '20 old\n21 intermediate\n22 newer-intermediate\n23 current (current)\n'
+  }
+  select_rollback_target "$test_root/fallback-current" 23
+  [[ "$previous_generation" == 22 ]]
+  [[ "$previous_system" == "$test_root/fallback-intermediate-22" ]]
+)
+
+malformed_fallback_output="$test_root/malformed-fallback-output"
+printf '{not-json\n' >"$fallback_state/deployment-state.json"
+test_rollback_fallback >"$malformed_fallback_output" 2>&1 \
+  || fail 'malformed deployment state did not use the documented fallback'
+grep -F 'deployment state is malformed JSON' "$malformed_fallback_output" >/dev/null
+grep -F 'falling back to previous NixOS generation' "$malformed_fallback_output" >/dev/null
+pass 'malformed deployment state is never interpreted as an exact rollback target'
+
+unknown_schema_fallback_output="$test_root/unknown-schema-fallback-output"
+make_legacy_deployment_state "$fallback_state/deployment-state.json" \
+  "$test_root/fallback-current" 23 "$test_root/fallback-old" 20
+jq '.schemaVersion = 3' "$fallback_state/deployment-state.json" >"$fallback_state/deployment-state.next"
+mv "$fallback_state/deployment-state.next" "$fallback_state/deployment-state.json"
+test_rollback_fallback >"$unknown_schema_fallback_output" 2>&1 \
+  || fail 'unknown deployment-state schema did not use the documented fallback'
+grep -F 'unsupported schema version' "$unknown_schema_fallback_output" >/dev/null
+grep -F 'falling back to previous NixOS generation' "$unknown_schema_fallback_output" >/dev/null
+pass 'unknown future deployment-state schema is not interpreted as current'
+
+missing_previous_fallback_output="$test_root/missing-previous-fallback-output"
+make_legacy_deployment_state "$fallback_state/deployment-state.json" \
+  "$test_root/fallback-current" 23 "$test_root/fallback-old" 20
+jq 'del(.previous.generation)' "$fallback_state/deployment-state.json" >"$fallback_state/deployment-state.next"
+mv "$fallback_state/deployment-state.next" "$fallback_state/deployment-state.json"
+test_rollback_fallback >"$missing_previous_fallback_output" 2>&1 \
+  || fail 'incomplete deployment state did not use the documented fallback'
+grep -F 'deployment state is invalid or incomplete' "$missing_previous_fallback_output" >/dev/null
+grep -F 'falling back to previous NixOS generation' "$missing_previous_fallback_output" >/dev/null
+pass 'missing recorded previous generation has an explicit compatibility fallback'
+
+ordinary_fallback_output="$test_root/ordinary-fallback-output"
+rm -f "$fallback_state/deployment-state.json"
+test_rollback_fallback >"$ordinary_fallback_output" 2>&1 \
+  || fail 'absent deployment state did not use the documented fallback'
+grep -F 'deployment state is absent' "$ordinary_fallback_output" >/dev/null
+grep -F 'falling back to previous NixOS generation' "$ordinary_fallback_output" >/dev/null
+pass 'ordinary rollback fallback selects the previous NixOS generation explicitly'
+
+exact_db_rollback_state="$test_root/exact-db-rollback-state"
+mkdir -p "$exact_db_rollback_state/generations" \
+  "$test_root/exact-db-current" \
+  "$test_root/exact-db-recorded-previous" \
+  "$test_root/exact-db-intermediate-21" \
+  "$test_root/exact-db-intermediate-22"
+ln -s "$test_root/exact-db-current" "$test_root/exact-db-current-link"
+ln -s "$test_root/exact-db-recorded-previous" "$test_root/exact-db-profile-20-link"
+ln -s "$test_root/exact-db-intermediate-21" "$test_root/exact-db-profile-21-link"
+ln -s "$test_root/exact-db-intermediate-22" "$test_root/exact-db-profile-22-link"
+jq -n '{dbUpgradeOccurred:true,dbVersions:{mongodb:"8.2.12"}}' \
+  >"$exact_db_rollback_state/generations/$(basename "$test_root/exact-db-current").json"
+jq -n '{dbUpgradeOccurred:false,dbVersions:{mongodb:"8.2.11"}}' \
+  >"$exact_db_rollback_state/generations/$(basename "$test_root/exact-db-recorded-previous").json"
+test_schema_v2_db_rollback_protection() (
+  export NIXDB_CURRENT_SYSTEM="$test_root/exact-db-current-link"
+  export NIXDB_STATE_DIR="$exact_db_rollback_state"
+  export NIXDB_SYSTEM_PROFILE="$test_root/exact-db-profile"
+  source_cli "$manifest" "$rollback_repo"
+  current_generation() { echo 23; }
+  write_deployment_state "$test_root/exact-db-current" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    "$(cat "$manifest")" false "$test_root/exact-db-recorded-previous" 20 \
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  nix-env() {
+    printf '20 old\n21 intermediate\n22 newer-intermediate\n23 current (current)\n'
+  }
+  cmd_rollback
+)
+exact_db_rollback_output="$test_root/exact-db-rollback-output"
+if test_schema_v2_db_rollback_protection >"$exact_db_rollback_output" 2>&1; then
+  fail 'exact schema-v2 DB binary rollback was not blocked'
+fi
+grep -F 'Target generation:   20' "$exact_db_rollback_output" >/dev/null
+grep -F -- '--allow-db-binary-rollback' "$exact_db_rollback_output" >/dev/null
+pass 'DB binary downgrade protection applies after exact schema-v2 target selection'
 
 marker_state="$test_root/marker-state"
 mkdir -p "$marker_state/generations" "$test_root/marker-system"
