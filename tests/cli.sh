@@ -619,6 +619,10 @@ git -C "$status_repo" reset --hard -q HEAD
 pass 'dirty lock after failed legacy activation is identified as incomplete'
 
 test_path_input_matches_active_state() (
+  path_state_system="$test_root/path-state-system"
+  mkdir -p "$path_state_system"
+  ln -s "$path_state_system" "$test_root/path-state-current"
+  export NIXDB_CURRENT_SYSTEM="$test_root/path-state-current"
   source_cli "$manifest" "$status_repo"
   input=$(input_metadata_json_from "$path_lock")
   source=$(source_checkout_json)
