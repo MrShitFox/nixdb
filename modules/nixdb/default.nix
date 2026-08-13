@@ -11,5 +11,7 @@
     ./engines/mongodb.nix
     ./engines/mysql.nix
     ./engines/manticore.nix
+    ./engines/redis.nix
+    ./engines/dragonfly.nix
   ];
 }

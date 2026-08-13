@@ -100,6 +100,16 @@ in
               type = sizeType;
               default = "0";
             };
+            engineMemoryLimit = mkOption {
+              type = types.nullOr sizeType;
+              default = null;
+              description = "Sanitized database-engine memory ceiling, if the engine has one.";
+            };
+            unixSockets = mkOption {
+              type = types.listOf (types.strMatching "^/.*");
+              default = [ ];
+              description = "Unix-domain listener paths owned by the instance.";
+            };
             internalCache = mkOption {
               default = null;
               description = "Sanitized engine cache/buffer metadata for operators.";
@@ -113,13 +123,7 @@ in
               );
             };
             engineMetadata = mkOption {
-              type = types.attrsOf (
-                types.oneOf [
-                  types.bool
-                  types.int
-                  types.str
-                ]
-              );
+              type = types.attrs;
               default = { };
               description = "Sanitized engine-specific operator metadata.";
             };
@@ -138,9 +142,22 @@ in
             name = mkOption { type = types.nonEmptyStr; };
             engine = mkOption { type = types.nonEmptyStr; };
             address = mkOption { type = types.nonEmptyStr; };
-            username = mkOption { type = types.nonEmptyStr; };
-            password = mkOption { type = types.nonEmptyStr; };
+            username = mkOption { type = types.str; };
+            password = mkOption { type = types.str; };
             ports = mkOption { type = types.attrsOf types.port; };
+            unixSocket = mkOption {
+              type = types.nullOr (types.strMatching "^/.*");
+              default = null;
+              description = "Optional Redis Unix-domain socket used by health probes when TCP is disabled.";
+            };
+            authenticated = mkOption {
+              type = types.bool;
+              default = true;
+            };
+            tls = mkOption {
+              type = types.attrs;
+              default = { };
+            };
           };
         }
       );

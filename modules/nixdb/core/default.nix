@@ -40,6 +40,8 @@ let
       mysql = cfg.mysql.declaredVersion;
       manticore = cfg.manticore.declaredVersion;
       manticoreComponents = cfg.manticore.componentVersions;
+      redis = cfg.redis.declaredVersion;
+      dragonfly = cfg.dragonfly.declaredVersion;
     };
     instances = map (
       instance:

@@ -56,6 +56,10 @@ lib.mkIf cfg.enable {
       message = "services.nixdb: data directories must be unique across all engines.";
     }
     {
+      assertion = unique (lib.concatMap (instance: instance.unixSockets) instances);
+      message = "services.nixdb: Unix socket paths must be unique across all engines.";
+    }
+    {
       assertion = unique (map (instance: instance.name) instances);
       message = "services.nixdb: normalized instance names must be unique across all engines.";
     }
