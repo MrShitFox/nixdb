@@ -35,8 +35,12 @@
 let
   version = "8.10.0";
   redisSource = fetchurl {
-    url = "https://download.redis.io/releases/redis-${version}.tar.gz";
-    hash = "sha256-8bqksovv1BeqZXfr7t3p6fx4FM/MKZsqbS/ZnvdCCmw=";
+    # Keep the source tied to the immutable upstream release commit.  The
+    # release CDN may reject a builder's generic fetch client (as seen on the
+    # real acceptance host); GitHub's official Redis repository archive is
+    # the same pinned source revision and remains hash-verified by Nix.
+    url = "https://github.com/redis/redis/archive/5279a8d44818a5ca51e9abb91a9b8ce481d3c88b.tar.gz";
+    hash = "sha256-QbV5ptqvVNWEbxircjkQ7RiHFafUkabXBaHThkQwGuw=";
   };
   redisBloomSource = fetchgit {
     url = "https://github.com/RedisBloom/RedisBloom.git";
