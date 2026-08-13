@@ -57,8 +57,10 @@ it does not grant redistribution rights.
 ## Redis Open Source 8
 
 - Package expression: `packages/redis/default.nix`.
-- Source origin: official Redis 8.10.0 release source plus the four official
-  Redis 8 bundled module repositories at their release-pinned revisions.
+- Source origin: official `redis/redis` commit
+  `5279a8d44818a5ca51e9abb91a9b8ce481d3c88b` (Redis Open Source 8.10.0),
+  fetched as an immutable hash-checked repository archive, plus the four
+  official Redis 8 bundled module repositories at release-pinned revisions.
 - License: Redis 8 is offered by upstream under a tri-license: Redis Source
   Available License 2.0 (RSALv2), Server Side Public License v1 (SSPLv1), or
   GNU Affero General Public License v3 (AGPLv3). The bundled module sources

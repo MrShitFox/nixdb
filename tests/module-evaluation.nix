@@ -86,6 +86,16 @@ let
       };
     }
   ];
+  invalidDragonflyTieringFileSize = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.tiering = {
+        enable = true;
+        mountPoint = "/";
+        prefix = "/srv/databases/dragonfly/dragonfly-example/tiered";
+        maxFileSize = "4M";
+      };
+    }
+  ];
   invalidRedisTls = mkSystem [
     {
       services.nixdb.redis.instances.redis-example.tls.enable = true;
@@ -186,6 +196,7 @@ assert evaluationFails invalidDragonflyThreadMemory;
 assert evaluationFails invalidDragonflyAof;
 assert evaluationFails invalidDragonflyNativeSnapshotFilename;
 assert evaluationFails invalidDragonflyTieringPath;
+assert evaluationFails invalidDragonflyTieringFileSize;
 assert evaluationFails invalidRedisTls;
 assert evaluationFails invalidDragonflyTls;
 assert evaluationFails invalidRedisRawCollision;

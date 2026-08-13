@@ -65,6 +65,19 @@ upstream release/revision/hash and only its entry in `versions/default.nix`,
 then build its package and run its package/runtime checks. Neither update
 requires moving nixpkgs or the other engine.
 
+The v0.3.0 pins are deliberately recorded in the package expressions and here
+for review:
+
+| Engine | Declared release | Immutable upstream source | Nix SHA-256 |
+| --- | --- | --- | --- |
+| Redis Open Source | 8.10.0 | `redis/redis` commit `5279a8d44818a5ca51e9abb91a9b8ce481d3c88b` | `sha256-QbV5ptqvVNWEbxircjkQ7RiHFafUkabXBaHThkQwGuw=` |
+| Dragonfly | 1.40.1 | `dragonflydb/dragonfly` commit `434478e00c366c711985d0b3269023fc39db8ad1`, official `dragonfly-x86_64.tar.gz` release artifact | `sha256-/Jubb684jXANGp2WS1H1chuO/txlkjkzCwO0zoVSYd4=` |
+
+The Redis archive is fetched from the official upstream Git repository at the
+recorded commit rather than relying on a mutable branch or on a builder's
+network access during the build. All bundled module and Cargo input revisions
+and hashes remain adjacent to that root pin in `packages/redis/default.nix`.
+
 ## Manticore bundle only
 
 Manticore is not a flake input. `packages/manticore/default.nix` fetches an

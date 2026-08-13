@@ -168,10 +168,10 @@ let
       "--tiered_min_value_size=${toString tiering.minValueSize}"
       "--tiered_max_pending_stash_bytes=${tiering.maxPendingStashBytes}"
     ]
-    ++ lib.optionals instance.authentication.enable [
-      "--requirepass=${instance.authentication.password}"
-      "--aclfile=${aclFile}"
-    ]
+    # The generated ACL defines the managed admin user and disables the
+    # default user by default. Supplying --requirepass as well is redundant
+    # and would place the password in systemd's ExecStart/process display.
+    ++ lib.optionals instance.authentication.enable [ "--aclfile=${aclFile}" ]
     ++ lib.optionals tls.enable [
       "--tls_cert_file=${tls.certFile}"
       "--tls_key_file=${tls.keyFile}"
@@ -502,7 +502,7 @@ in
               };
               maxFileSize = lib.mkOption {
                 type = sizeType;
-                default = "0";
+                default = "256M";
               };
               offloadThreshold = lib.mkOption {
                 type = lib.types.float;
@@ -615,6 +615,12 @@ in
           instance: !instance.tiering.enable || instance.tiering.mountPoint == instance.mountPoint
         ) (lib.attrValues instances);
         message = "services.nixdb.dragonfly: v0.3.0 requires tiered storage under the instance's quota-managed mountPoint; a separate quota model is not silently assumed.";
+      }
+      {
+        assertion = lib.all (
+          instance: !instance.tiering.enable || parseSize instance.tiering.maxFileSize >= 256 * 1024 * 1024
+        ) (lib.attrValues instances);
+        message = "services.nixdb.dragonfly: Dragonfly v1.40.1 tiered_max_file_size must be at least 256M when tiering is enabled.";
       }
       {
         assertion = lib.all (

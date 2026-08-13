@@ -54,9 +54,11 @@ implicit host-CPU-sized thread pool on small memory limits.
 ## Authentication, TLS, listeners, and tiering
 
 `authentication` accepts the same declarative user shape as Redis and renders
-a Dragonfly ACL file plus `requirepass` for the managed admin user. Dragonfly
-ACL user names use the same letters/digits/`_`/`-` safe token shape as Redis
-(the managed default is `nixdb-admin`). TLS takes
+a Dragonfly ACL file for the managed admin user. The default user is disabled
+unless explicitly enabled, so the ACL file supplies authenticated access
+without placing a password in systemd's process display. Dragonfly ACL user
+names use the same letters/digits/`_`/`-` safe token shape as Redis (the
+managed default is `nixdb-admin`). TLS takes
 certificate paths only. Optional Memcached and admin/HTTP listeners have their
 own ports and firewall booleans; no listener is public by default.
 
@@ -79,7 +81,9 @@ For SSD tiering, set `tiering.enable`, `tiering.prefix`, and `tiering.mountPoint
 `tiering.mountPoint` must equal the instance `mountPoint`, and `tiering.prefix`
 must be beneath `dataDir`. This deliberately keeps tier files inside the same
 XFS project quota; v0.3.0 does not pretend that a second, unmodeled path has
-the instance's `diskLimit`.
+the instance's `diskLimit`. Dragonfly v1.40.1 requires
+`tiering.maxFileSize >= "256M"`; nixdb defaults it to `"256M"` and rejects a
+smaller enabled configuration before activation.
 
 S3 snapshot URL, endpoint, HTTPS, payload-signing, and EC2-metadata flags are
 typed under `persistence.s3`. Supply credentials through the environment or
