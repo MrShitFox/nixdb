@@ -353,4 +353,18 @@ grep -F 'does NOT roll back database' "$rollback_output" >/dev/null
 grep -F -- '--allow-db-binary-rollback' "$rollback_output" >/dev/null
 pass 'rollback warns and blocks recorded DB binary downgrade without opt-in'
 
+marker_state="$test_root/marker-state"
+mkdir -p "$marker_state/generations" "$test_root/marker-system"
+existing_marker="$marker_state/generations/$(basename "$test_root/marker-system").json"
+jq -n '{schemaVersion:1,dbUpgradeOccurred:true,dbVersions:{mongodb:"8.2.12"}}' >"$existing_marker"
+test_marker_preservation() (
+  export NIXDB_STATE_DIR="$marker_state"
+  source_cli "$manifest" "$test_root/non-git"
+  record_generation_state "$test_root/marker-system" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    "$(cat "$manifest")" false
+  jq -e '.dbUpgradeOccurred == true' "$existing_marker" >/dev/null
+)
+test_marker_preservation || fail 'existing DB-upgrade generation marker was overwritten'
+pass 'later deployments preserve existing DB-upgrade generation metadata'
+
 printf '1..%d\n' "$passed"

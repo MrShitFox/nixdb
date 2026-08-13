@@ -867,6 +867,12 @@ record_generation_state() {
   local system_path=$1 host_revision=$2 manifest_data=$3 upgrade=$4 marker temp
   marker=$(generation_marker "$system_path")
   install -d -m 0700 "$STATE_DIR/generations"
+  # A marker describes how this immutable system generation first entered
+  # service. Do not erase a recorded DB-upgrade transition when that same
+  # generation becomes the pre-deployment state of a later update.
+  if [[ -r "$marker" ]]; then
+    return
+  fi
   temp=$(mktemp "$STATE_DIR/generations/.state.XXXXXX")
   jq -cn \
     --arg system "$system_path" \
