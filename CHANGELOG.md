@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased v0.3.0
+
+### Added
+
+- Redis Open Source and Dragonfly multi-instance engines with independently
+  pinned packaging, version guards, resource/cgroup/quota integration, and
+  operator CLI metadata.
+- Redis RDB/AOF controls, ACL, TLS, Unix socket, module-aware health checks,
+  and collision-checked native configuration.
+- Dragonfly snapshots, cache/store mode, ACL, TLS, optional Memcached/admin
+  listeners, tiering metadata, and collision-checked native flags.
+
 ## v0.2.3 - 2026-08-13
 
 - manual rollback now consumes deployment-state schema v2 correctly;

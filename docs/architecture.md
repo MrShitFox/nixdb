@@ -6,7 +6,7 @@ nixdb is a reusable flake, not a host configuration repository.
 flake.nix                     public module, packages, checks, templates
 modules/nixdb/core/           engine-agnostic metadata consumers
 modules/nixdb/engines/        isolated engine lifecycle and authentication
-packages/manticore/           immutable Manticore bundle packaging
+packages/{manticore,redis,dragonfly}/ immutable engine packaging
 packages/nixdb-cli/           downstream-host operator CLI
 versions/                     declared database component versions
 lib/                          small evaluation helpers
@@ -29,7 +29,8 @@ contains only:
 - data directory and declared mount point;
 - XFS project ID and hard quota;
 - all listeners and firewall-exposed ports;
-- CPU weight and memory limits.
+- CPU weight, cgroup limits, and an optional engine-level memory limit;
+- sanitized engine metadata such as persistence, cache mode, and modules.
 
 Core consumes that list to build `database.slice`, `databases.target`, system
 users, quota units, assertions, and firewall rules. Core does not inspect

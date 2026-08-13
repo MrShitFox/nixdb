@@ -5,13 +5,15 @@ database instances with reproducible version pinning, resource controls, and
 XFS project quotas.
 
 nixdb is a NixOS module plus an operator CLI. It currently supports standalone
-MongoDB, MySQL, and Manticore Search instances. It does not provide clustering,
-replication, database-content rollback, or a backup framework.
+MongoDB, MySQL, Manticore Search, Redis Open Source, and Dragonfly instances.
+It does not provide clustering, replication/failover orchestration,
+database-content rollback, or a backup framework.
 
 ## Features
 
 - isolated engine modules and multiple instances per engine;
-- independently pinned MongoDB, MySQL, and Manticore package sources;
+- independently pinned MongoDB, MySQL, Manticore, Redis Open Source, and
+  Dragonfly package sources;
 - a version-coupled Manticore Search, Buddy, Columnar, Secondary, and KNN bundle;
 - per-instance `CPUWeight`, `MemoryHigh`, `MemoryMax`, and internal cache controls;
 - XFS project quotas per data directory;
@@ -146,7 +148,10 @@ Common fields are `dataDir`, `mountPoint`, stable `projectId`, `diskLimit`,
 `cpuWeight`, `memoryHigh`, `memoryMax`, `memorySwapMax`, `adminUser`, and
 `password`. MongoDB adds `port` and WiredTiger `cacheGB`; MySQL adds `port`,
 `bufferPool`, and `maxConnections`; Manticore adds `sqlPort` and `httpPort`.
-Every engine supports `bindAddress` and `openFirewall`.
+Redis adds `maxMemory`, ACL/TLS, RDB/AOF, a Unix socket, and `extraConfig`.
+Dragonfly adds `maxMemory`, `cacheMode`, snapshots, ACL/TLS, optional
+Memcached/admin listeners, tiering, and `extraFlags`. Every engine supports
+`bindAddress` and `openFirewall` where that native listener exists.
 
 Credentials currently become part of the downstream Nix store and host Git
 history if committed. Keep that repository private, limit access, and layer a
@@ -163,6 +168,17 @@ elastic: `CPUWeight` affects scheduling only under contention; nixdb adds no
 CPU quota or pinning. `MemoryMax` may cause a cgroup OOM when exceeded. An XFS
 hard quota causes later writes to fail when full. Internal database caches
 should remain comfortably below `MemoryMax`.
+
+Redis and Dragonfly have a mandatory two-layer memory contract: their engine
+limit (`maxMemory`) is separate from cgroup `MemoryHigh` and `MemoryMax`.
+`MemoryMax` is deliberately not derived from `maxMemory`; leave explicit
+headroom for allocator fragmentation, client/replication buffers, and Redis
+AOF/RDB rewrite or fork overhead. See [Redis](docs/redis.md) and
+[Dragonfly](docs/dragonfly.md).
+
+Public, fake-credential configuration examples are available in
+[`examples/redis.nix`](examples/redis.nix) and
+[`examples/dragonfly.nix`](examples/dragonfly.nix).
 
 ## Operator CLI
 
@@ -198,7 +214,7 @@ planned without escalation.
 `nixdb plan` evaluates the candidate in a private temporary copy and never
 changes the host lock or activates services. `nixdb update` accepts only the
 newest exact `vMAJOR.MINOR.PATCH` tag by default; prereleases require an explicit
-ref. If MongoDB, MySQL, Manticore Search, or the coupled Manticore bundle changes,
+ref. If MongoDB, MySQL, Manticore Search, Redis, Dragonfly, or the coupled Manticore bundle changes,
 deployment stops before `nixos-rebuild test`. Proceed only after reviewing the
 upstream migration and backups:
 
@@ -269,10 +285,11 @@ inside that file, and register only normalized metadata with core. See
 
 ## Version management
 
-NixOS, MongoDB, MySQL, and Manticore versions are separate decisions. Database
-packages use independently locked inputs or repository-owned immutable package
-expressions. Manticore's coupled components move as one validated bundle. See
-[versions](docs/versions.md) and [Manticore packaging](docs/manticore.md).
+NixOS, MongoDB, MySQL, Manticore, Redis, and Dragonfly versions are separate
+decisions. Database packages use independently locked inputs or
+repository-owned immutable package expressions. Manticore's coupled components
+move as one validated bundle. See [versions](docs/versions.md),
+[Redis](docs/redis.md), and [Dragonfly](docs/dragonfly.md).
 
 ## Build and test
 

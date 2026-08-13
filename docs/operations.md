@@ -54,14 +54,17 @@ sudo nixdb restart <instance>
 ```
 
 `health` validates units, configured listeners, XFS/project quotas, cgroups,
-authenticated MongoDB/MySQL/Manticore operations, unauthenticated rejection,
-Manticore Buddy, RT tables, and HTTP.
+authenticated MongoDB/MySQL/Manticore/Redis/Dragonfly operations,
+unauthenticated rejection where configured, Manticore Buddy/RT tables/HTTP,
+Redis owned configuration and modules, and Dragonfly's enabled compatible
+listeners. It uses namespaced temporary keys and never flushes a database.
 
 `wait` is read-only and validates the instance name against the evaluated
 manifest. It waits for each selected service to be active, all configured
 listeners to be available, and then an authenticated engine probe: MongoDB
 `ping`, MySQL `SELECT VERSION(),1` (including the documented RSA-key path), or
-Manticore SQL `SHOW STATUS`/`SHOW VERSION` plus authenticated HTTP. It uses a
+Manticore SQL `SHOW STATUS`/`SHOW VERSION` plus authenticated HTTP, Redis
+authenticated `PING`, or Dragonfly authenticated Redis-protocol `PING`. It uses a
 60-second default bounded timeout and one-second retry interval. Healthy
 services return on their first probe; a timeout preserves the final probe error
 instead of hiding a permanent failure. `restart` uses the same readiness check
@@ -128,7 +131,7 @@ the same time. It records the original commit, branch or detached state, exact
 mutation.
 
 Candidate analysis happens before replacing the host lock. Any change to the
-declared MongoDB, MySQL, Manticore Search, or version-coupled Manticore bundle
+declared MongoDB, MySQL, Manticore Search, Redis, Dragonfly, or version-coupled Manticore bundle
 is a database software upgrade, including patch releases. Without explicit
 approval nixdb prints every current/candidate version and exits before
 `nixos-rebuild test` or any candidate database daemon can start:

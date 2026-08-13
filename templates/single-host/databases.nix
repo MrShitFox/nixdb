@@ -10,7 +10,7 @@
       inventoryFile = "databases.nix";
     };
 
-    # Add MongoDB, MySQL, or Manticore instances here. Start from the examples
-    # in the nixdb README and replace all CHANGE_ME values before deployment.
+    # Add MongoDB, MySQL, Manticore, Redis, or Dragonfly instances here. Start
+    # from the nixdb examples and replace all CHANGE_ME values before deployment.
   };
 }

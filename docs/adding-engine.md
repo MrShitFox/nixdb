@@ -9,7 +9,8 @@ Use PostgreSQL as a conceptual example; it is not implemented yet.
    semantics, and systemd units inside that module.
 4. For every instance, append one normalized record to
    `services.nixdb._internal.instances` containing its service name, ports,
-   listeners, data path, mount, project ID, quota, and cgroup resources.
+   listeners, data path, mount, project ID, quota, cgroup resources, optional
+   engine memory limit, and sanitized engine metadata.
 5. Import the new module once from `modules/nixdb/default.nix`.
 6. If nixpkgs cannot provide the intended immutable version, add
    `packages/postgresql/` or a dedicated flake input. Add its declared version
@@ -23,4 +24,8 @@ modules. The normalized record is the entire shared-infrastructure contract.
 
 Review duplicate-port and project-ID assertions, firewall behavior, quota boot
 ordering, initialization idempotency, and non-destructive handling of an
-existing data directory before proposing the engine.
+existing data directory before proposing the engine. A new engine must also
+join the runtime manifest, CLI readiness/health/config/resources output,
+deployment DB-version guard, and secret-sanitization coverage. Give common
+operator knobs typed options plus a collision-checked native escape hatch;
+never make core understand engine syntax.

@@ -58,5 +58,62 @@
       memoryHigh = "2G";
       memoryMax = "3G";
     };
+
+    redis.instances.redis-cache = {
+      dataDir = "/srv/databases/redis/cache";
+      mountPoint = "/";
+      projectId = 2004;
+      diskLimit = "20G";
+      port = 6379;
+      maxMemory = "2G";
+      maxMemoryPolicy = "allkeys-lru";
+      persistence.saveRules = [ ];
+      memoryHigh = "2500M";
+      memoryMax = "3G";
+    };
+
+    redis.instances.redis-paranoid = {
+      dataDir = "/srv/databases/redis/paranoid";
+      mountPoint = "/";
+      projectId = 2005;
+      diskLimit = "20G";
+      port = 6380;
+      maxMemory = "1G";
+      persistence = {
+        appendOnly = true;
+        appendFsync = "always";
+      };
+      authentication.password = "CHANGE_ME";
+      memoryHigh = "1200M";
+      memoryMax = "1500M";
+    };
+
+    dragonfly.instances.dragonfly-store = {
+      dataDir = "/srv/databases/dragonfly/store";
+      mountPoint = "/";
+      projectId = 2006;
+      diskLimit = "20G";
+      port = 6381;
+      maxMemory = "2G";
+      cacheMode = false;
+      persistence.snapshotCron = "*/5 * * * *";
+      memoryHigh = "2500M";
+      memoryMax = "3G";
+    };
+
+    dragonfly.instances.dragonfly-cache = {
+      dataDir = "/srv/databases/dragonfly/cache";
+      mountPoint = "/";
+      projectId = 2007;
+      diskLimit = "20G";
+      port = 6382;
+      maxMemory = "1G";
+      cacheMode = true;
+      extraFlags = {
+        num_shards = 2;
+      };
+      memoryHigh = "1200M";
+      memoryMax = "1500M";
+    };
   };
 }

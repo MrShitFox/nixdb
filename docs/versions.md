@@ -3,7 +3,7 @@
 The project deliberately treats these as independent choices:
 
 ```text
-NixOS/nixpkgs != MongoDB != MySQL != Manticore bundle
+NixOS/nixpkgs != MongoDB != MySQL != Manticore bundle != Redis != Dragonfly
 ```
 
 Declared versions live in `versions/default.nix`. MongoDB and MySQL use
@@ -54,6 +54,16 @@ The module asserts that the selected package version equals
    compatibility before using an existing data directory.
 
 The module asserts that the selected package version equals `versions.mysql`.
+
+## Redis Open Source and Dragonfly only
+
+`packages/redis/default.nix` and `packages/dragonfly/default.nix` are
+repository-owned package expressions. Redis pins the official source release,
+each official bundled module source, and Cargo vendor trees. Dragonfly pins an
+official immutable release artifact. Update one engine by changing its exact
+upstream release/revision/hash and only its entry in `versions/default.nix`,
+then build its package and run its package/runtime checks. Neither update
+requires moving nixpkgs or the other engine.
 
 ## Manticore bundle only
 

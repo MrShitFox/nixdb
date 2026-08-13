@@ -53,3 +53,30 @@ not alter those notices or terms.
 Before changing an artifact or adding vendored content, inspect its exact
 license and preserve all required notices. A Nix hash proves content identity;
 it does not grant redistribution rights.
+
+## Redis Open Source 8
+
+- Package expression: `packages/redis/default.nix`.
+- Source origin: official Redis 8.10.0 release source plus the four official
+  Redis 8 bundled module repositories at their release-pinned revisions.
+- License: Redis 8 is offered by upstream under a tri-license: Redis Source
+  Available License 2.0 (RSALv2), Server Side Public License v1 (SSPLv1), or
+  GNU Affero General Public License v3 (AGPLv3). The bundled module sources
+  carry the same upstream licensing model.
+- Reference: <https://redis.io/legal/licenses/>.
+
+nixdb does not change, select on a user's behalf, or relicense any Redis term.
+Review the current upstream terms for the intended deployment model.
+
+## Dragonfly v1.40.1
+
+- Package expression: `packages/dragonfly/default.nix`.
+- Artifact origin: Dragonfly's official immutable GitHub release artifact,
+  SHA-256 pinned by Nix.
+- License: Business Source License 1.1 (BSL 1.1); the pinned upstream license
+  specifies its Change Date and change license. It is not GPL and is not
+  relicensed by nixdb.
+- Reference: <https://github.com/dragonflydb/dragonfly/blob/v1.40.1/LICENSE.md>.
+
+Review Dragonfly's BSL additional-use grant and Change Date before deploying
+it in any service model.
