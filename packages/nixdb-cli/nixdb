@@ -446,11 +446,13 @@ lock_file_is_dirty() {
 deployment_description() {
   local manifest=$1 input=$2 source=$3 state=$4 runtime_revision locked_revision
   local source_state source_clean state_availability state_system active_system locked_release installed_release
+  local input_state state_lock_hash current_lock_hash state_version state_revision runtime_version
   runtime_revision=$(jq -r .framework.revision <<<"$manifest")
   locked_revision=$(jq -r '.lockedRevision // empty' <<<"$input")
   source_state=$(jq -r .state <<<"$source")
   source_clean=$(jq -r 'if .clean == null then "unknown" else .clean end' <<<"$source")
   state_availability=$(jq -r .availability <<<"$state")
+  input_state=$(jq -r .resolvedReleaseState <<<"$input")
 
   if [[ "$source_state" == git && "$source_clean" == false ]] && lock_file_is_dirty; then
     echo 'incomplete candidate activation (dirty flake.lock)'
@@ -464,6 +466,24 @@ deployment_description() {
       && [[ "$source_clean" == false ]]; then
       echo 'incomplete candidate activation (active system differs from last successful deployment)'
       return
+    fi
+
+    # Path inputs do not have a Git revision, so compare the exact lock hash,
+    # recorded framework identity, and active system instead of pretending the
+    # lock is unavailable.  The state file is operational evidence, never an
+    # alternate source of configuration.
+    if [[ "$input_state" == not-applicable ]]; then
+      state_lock_hash=$(jq -r '.record.source.lockSha256 // empty' <<<"$state")
+      state_version=$(jq -r '.record.framework.version // empty' <<<"$state")
+      state_revision=$(jq -r '.record.framework.revision // empty' <<<"$state")
+      runtime_version=$(jq -r .framework.version <<<"$manifest")
+      current_lock_hash=$(sha256sum "$CONFIG_ROOT/flake.lock" 2>/dev/null | awk '{print $1}')
+      if [[ -n "$active_system" && "$active_system" == "$state_system" ]] \
+        && [[ -n "$state_lock_hash" && "$current_lock_hash" == "$state_lock_hash" ]] \
+        && [[ "$runtime_version" == "$state_version" && "$runtime_revision" == "$state_revision" ]]; then
+        echo 'path input matches active system'
+        return
+      fi
     fi
   fi
 

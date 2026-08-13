@@ -618,6 +618,23 @@ test_dirty_lock_incomplete_state || fail 'dirty lock after incomplete deployment
 git -C "$status_repo" reset --hard -q HEAD
 pass 'dirty lock after failed legacy activation is identified as incomplete'
 
+test_path_input_matches_active_state() (
+  source_cli "$manifest" "$status_repo"
+  input=$(input_metadata_json_from "$path_lock")
+  source=$(source_checkout_json)
+  current_system=$(readlink -f "$CURRENT_SYSTEM")
+  lock_hash=$(sha256sum "$status_repo/flake.lock" | awk '{print $1}')
+  state=$(jq -cn \
+    --arg system "$current_system" \
+    --arg lockHash "$lock_hash" \
+    --arg version "$(jq -r .framework.version "$manifest")" \
+    --arg revision "$(jq -r .framework.revision "$manifest")" \
+    '{availability:"valid",record:{system:$system,source:{lockSha256:$lockHash},framework:{version:$version,revision:$revision}}}')
+  [[ $(deployment_description "$(cat "$manifest")" "$input" "$source" "$state") == 'path input matches active system' ]]
+)
+test_path_input_matches_active_state || fail 'consistent path input is reported as unavailable'
+pass 'status reports a consistent path candidate truthfully'
+
 readiness_attempts="$test_root/readiness-attempts"
 printf '0\n' >"$readiness_attempts"
 test_manticore_readiness_retry() (
