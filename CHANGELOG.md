@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### v0.2.3 candidate
+
+#### Fixed
+
+- manual rollback now consumes deployment-state schema v2 correctly;
+- the exact recorded previous nixdb generation wins over unrelated intermediate
+  NixOS generations;
+- legacy schema compatibility and fallback diagnostics are improved;
+- README and operator documentation are synchronized with the current CLI.
+
 ## v0.2.2 - 2026-08-13
 
 - harden `nixdb plan` privilege handling and make it self-elevate only when

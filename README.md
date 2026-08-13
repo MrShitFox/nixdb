@@ -32,7 +32,7 @@ before adopting it.
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixdb.url = "github:MrShitFox/nixdb/v0.2.2";
+    nixdb.url = "github:MrShitFox/nixdb/v0.2.3";
   };
 
   outputs = { nixpkgs, nixdb, ... }: {
@@ -51,6 +51,9 @@ before adopting it.
 The public API is `services.nixdb`. Host hardware, filesystems, credentials,
 paths, project IDs, ports, and resource policy remain in the downstream host
 repository.
+
+These examples name the v0.2.3 release target. Until that release is published,
+test an unpublished candidate through a local `path:` input as shown below.
 
 Initialize a downstream skeleton with:
 
@@ -172,21 +175,17 @@ root-only file. Passwords never appear in the manifest or CLI output.
 sudo nixdb status
 sudo nixdb status --json
 sudo nixdb health
-sudo nixdb wait
-sudo nixdb wait mongo-example --timeout 90
 sudo nixdb doctor
+sudo nixdb wait [instance]
 sudo nixdb versions
 sudo nixdb quotas
 sudo nixdb resources
 sudo nixdb config
 sudo nixdb logs mongo-example
 sudo nixdb restart mongo-example
-sudo nixdb plan
-sudo nixdb plan --main
-sudo nixdb plan v0.2.2
+sudo nixdb plan --latest
 sudo nixdb update
-sudo nixdb update --main
-sudo nixdb deploy v0.2.2
+sudo nixdb deploy <release/ref>
 sudo nixdb rollback
 ```
 
@@ -219,8 +218,8 @@ release. The public flake therefore exports the same CLI as both a package and
 an app:
 
 ```console
-nix build github:MrShitFox/nixdb/v0.2.2#nixdb
-nix run github:MrShitFox/nixdb/v0.2.2#nixdb -- help
+nix build github:MrShitFox/nixdb/v0.2.3#nixdb
+nix run github:MrShitFox/nixdb/v0.2.3#nixdb -- help
 ```
 
 To upgrade a legacy host using the target release's deployment code, run that
@@ -228,9 +227,9 @@ same app with an explicit downstream context. These flags are command-line
 context, not privileged environment overrides:
 
 ```console
-sudo nix run github:MrShitFox/nixdb/v0.2.2#nixdb -- \
+sudo nix run github:MrShitFox/nixdb/v0.2.3#nixdb -- \
   --config-root /etc/nixos --flake-host db-host --input-name nixdb \
-  deploy v0.2.2
+  deploy v0.2.3
 ```
 
 For an unpublished development candidate, substitute an immutable local flake
@@ -238,14 +237,27 @@ reference and make the downstream input point to it only through the candidate
 transaction:
 
 ```console
-sudo nix run path:/srv/nixdb-v0.2.2#nixdb -- \
+sudo nix run path:/path/to/nixdb-v0.2.3#nixdb -- \
   --config-root /etc/nixos --flake-host db-host --input-name nixdb \
-  deploy --input-url path:/srv/nixdb-v0.2.2
+  deploy --input-url path:/path/to/nixdb-v0.2.3
 ```
 
 This is not a second updater: it is exactly the CLI that the target NixOS
 module installs. `--input-url` is explicit and is intended for local/bootstrap
 testing; normal public upgrades should use a stable tag.
+
+### Rollback semantics
+
+When valid deployment state describes the active system, `nixdb rollback` uses
+its exact recorded previous nixdb generation. Unrelated intermediate NixOS
+generations are not equivalent rollback targets. If that evidence is absent,
+invalid, stale, or unavailable, nixdb emits an explicit warning and uses the
+previous NixOS generation only as a compatibility fallback.
+
+Rollback changes NixOS/system configuration only; it does not roll back
+database contents or database file formats. A rollback that could downgrade
+database binaries remains blocked unless the operator reviews compatibility and
+passes `--allow-db-binary-rollback`.
 
 ## Adding an instance or engine
 

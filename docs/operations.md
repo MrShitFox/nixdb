@@ -30,7 +30,9 @@ options remain the source of truth.
 - `/var/lib/nixdb/deployment-state.json` and per-generation records contain
   only revisions, configured input metadata, lock hash, versions, generations,
   timestamps, and whether a database upgrade occurred. Writes use a mode-0600
-  temporary file and rename. The schema is validated before use. These are
+  temporary file and rename. Deployment state schema v2 is current; the CLI
+  also reads valid schema v1 records created by v0.2.1. Unknown, malformed, or
+  incomplete schemas are never treated as exact rollback evidence. These are
   advisory operational evidence, not a second configuration source of truth.
 
 ## Daily commands
@@ -85,7 +87,7 @@ exact downstream source state.
 nixdb plan             # newest stable release
 nixdb plan --latest    # same selection, explicitly
 nixdb plan --main      # public development branch
-nixdb plan v0.2.2      # exact tag or revision
+nixdb plan v0.2.3      # exact tag or revision
 ```
 
 Planning requires a clean downstream checkout but does not mutate it. nixdb
@@ -115,7 +117,7 @@ They can be requested only as explicit deployment refs.
 
 ```console
 sudo nixdb update             # newest stable v* tag
-sudo nixdb deploy v0.2.2      # exact public tag/ref
+sudo nixdb deploy v0.2.3      # exact public tag/ref
 sudo nixdb update --main      # explicit development opt-in
 ```
 
@@ -169,15 +171,15 @@ can execute deployment logic from the target release rather than relying on an
 older installed CLI:
 
 ```console
-nix run github:MrShitFox/nixdb/v0.2.2#nixdb -- help
-sudo nix run github:MrShitFox/nixdb/v0.2.2#nixdb -- \
+nix run github:MrShitFox/nixdb/v0.2.3#nixdb -- help
+sudo nix run github:MrShitFox/nixdb/v0.2.3#nixdb -- \
   --config-root /etc/nixos --flake-host db-host --input-name nixdb \
-  deploy v0.2.2
+  deploy v0.2.3
 ```
 
 The explicit `--config-root`, `--flake-host`, and `--input-name` arguments are
 validated command context. For a local immutable candidate, use
-`deploy --input-url path:/srv/nixdb-v0.2.2`; it evaluates and activates the
+`deploy --input-url path:/path/to/nixdb-v0.2.3`; it evaluates and activates the
 same target CLI without a publication step. No separate bootstrap updater is
 maintained.
 
@@ -187,8 +189,19 @@ maintained.
 sudo nixdb rollback
 ```
 
-This switches to the previous NixOS system generation, aligns the downstream
-host Git checkout when a recorded mapping is available, and runs health.
+When a valid schema-v1 or schema-v2 deployment-state record describes the
+active system, this selects the exact `previous.generation` recorded by the
+last successful nixdb deployment and verifies that its profile link still
+resolves to the recorded `previous.system`. Unrelated intermediate NixOS
+generations are not equivalent to that target.
+
+If no valid exact recorded target is available (for example, state is absent,
+malformed, future-schema, stale, or incomplete), nixdb explicitly warns and
+uses the numerically previous NixOS generation only as a compatibility
+fallback. It refuses if that fallback generation cannot be resolved.
+
+After selecting a target, rollback aligns the downstream host Git checkout when
+a recorded mapping is available and runs health.
 
 `nixdb rollback` rolls back NixOS/system configuration. It does **not** roll
 back database contents or database file formats. If recorded versions differ

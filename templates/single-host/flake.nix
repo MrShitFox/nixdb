@@ -4,7 +4,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixdb.url = "github:MrShitFox/nixdb/v0.2.0";
+    nixdb.url = "github:MrShitFox/nixdb/v0.2.3";
   };
 
   outputs = { nixpkgs, nixdb, ... }: {
