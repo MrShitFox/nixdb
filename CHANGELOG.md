@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.2 - 2026-08-13
 
 - harden `nixdb plan` privilege handling and make it self-elevate only when
   deployment metadata needs root access;
@@ -12,7 +12,14 @@
 - evaluate build/test/switch from a private candidate checkout, keeping the
   live downstream lock clean until successful activation;
 - expose the same `nixdb` CLI as a flake package and app for target-version
-  bootstrap deployments, and strengthen atomic deployment-state evidence.
+  bootstrap deployments;
+- restore the exact system generation, source checkout, and `flake.lock` after
+  a failed `nixos-rebuild test` candidate activation;
+- record atomic, schema-v2 deployment-state evidence and recover transactions
+  on ERR, INT, and TERM;
+- report path inputs truthfully without fabricating a Git revision or tag;
+- expand CLI, deployment-recovery, signal, JSON, readiness, and NixOS VM
+  regression coverage.
 
 ## v0.2.1 — operator safety hardening (2026-08-13)
 
