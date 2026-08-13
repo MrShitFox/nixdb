@@ -1168,7 +1168,11 @@ probe_dragonfly_ready() {
     echo 'authenticated Dragonfly PING did not return PONG' >&2
     return 1
   }
-  version=$(redis_cli_command "$name" INFO server | sed -n 's/^dragonfly_version://p' | head -n 1)
+  version=$(redis_cli_command "$name" INFO server \
+    | sed -n 's/^dragonfly_version://p' \
+    | tr -d '\r' \
+    | sed -E 's/^(df-)?v//' \
+    | head -n 1)
   [[ "$version" == "$expected" ]] || {
     echo "Dragonfly server version is $version, expected $expected" >&2
     return 1

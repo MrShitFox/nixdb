@@ -213,6 +213,24 @@ test_redis_cli_uses_portable_connection_options \
   || fail 'Redis-compatible health adapter uses unsupported redis-cli connection options'
 pass 'Redis-compatible health adapter uses portable redis-cli options'
 
+test_dragonfly_info_version_normalization() (
+  source_cli "$manifest" "$test_root/non-git"
+  redis_cli_command() {
+    local name=$1
+    shift
+    case "$*" in
+      PING) printf 'PONG\n' ;;
+      'INFO server') printf 'dragonfly_version:df-v1.40.1\r\n' ;;
+      '--raw CONFIG GET maxmemory') printf 'maxmemory\n1073741824\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  probe_dragonfly_ready dragonfly-example
+)
+test_dragonfly_info_version_normalization \
+  || fail 'Dragonfly INFO version format is not normalized for health'
+pass 'Dragonfly INFO version format is normalized for health'
+
 test_missing_manifest() (
   source_cli "$test_root/absent.json" "$test_root/non-git"
   manifest_json
