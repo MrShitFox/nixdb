@@ -195,6 +195,10 @@ stdenv.mkDerivation (finalAttrs: {
     cp -a "$src"/. .
     chmod -R u+w .
     find scripts modules -type f -name '*.sh' -exec chmod u+x {} +
+    # GitHub source archives do not retain the executable bit on Readies'
+    # extensionless Python bootstrap helper.  RedisJSON/TimeSeries invoke it
+    # through a shell command, so make the pinned helper executable explicitly.
+    find modules -path '*/deps/readies/bin/*' -type f -exec chmod u+x {} +
   '';
 
   postPatch = ''
