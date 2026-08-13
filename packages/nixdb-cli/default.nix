@@ -9,6 +9,7 @@
   git,
   gnugrep,
   gnused,
+  gnutar,
   hostname,
   iproute2,
   jq,
@@ -17,7 +18,6 @@
   systemd,
   util-linux,
   xfsprogs,
-  dbPackages,
 }:
 
 writeShellApplication {
@@ -31,6 +31,7 @@ writeShellApplication {
     git
     gnugrep
     gnused
+    gnutar
     hostname
     iproute2
     jq
@@ -39,10 +40,6 @@ writeShellApplication {
     systemd
     util-linux
     xfsprogs
-    dbPackages.mongodb
-    dbPackages.mongosh
-    dbPackages.mysql
-    dbPackages.manticore
   ];
   text = builtins.readFile ./nixdb;
   meta = {
