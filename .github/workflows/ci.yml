@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Check formatting
+        run: nix fmt -- --check $(git ls-files '*.nix')
+      - name: Evaluate and build checks
+        run: nix flake check --print-build-logs
+      - name: Secret sanity check
+        run: bash tests/no-secrets.sh .

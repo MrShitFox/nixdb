@@ -1,0 +1,108 @@
+{ config, lib, ... }:
+
+let
+  inherit (lib) mkEnableOption mkOption types;
+  sizeType = types.strMatching "^[0-9]+[KMGTPEkmgtpe]?$";
+in
+{
+  options.services.nixdb = {
+    enable = mkEnableOption "the reusable database instance stack";
+
+    slice = {
+      memoryHigh = mkOption {
+        type = sizeType;
+        default = "48G";
+        description = "Combined database.slice memory pressure threshold.";
+      };
+      memoryMax = mkOption {
+        type = sizeType;
+        default = "64G";
+        description = "Combined database.slice hard memory ceiling.";
+      };
+      memorySwapMax = mkOption {
+        type = sizeType;
+        default = "0";
+        description = "Combined database.slice swap ceiling.";
+      };
+    };
+
+    operator = {
+      enable = mkEnableOption "the nixdb operator CLI" // {
+        default = true;
+      };
+      configRoot = mkOption {
+        type = types.strMatching "^/.*";
+        default = "/etc/nixos";
+        description = "Downstream host flake checkout operated by nixdb.";
+      };
+      flakeHost = mkOption {
+        type = types.nonEmptyStr;
+        default = config.networking.hostName;
+        description = "Attribute name under nixosConfigurations in the downstream flake.";
+      };
+      inventoryFile = mkOption {
+        type = types.nonEmptyStr;
+        default = "databases.nix";
+        description = "Absolute inventory path or a path relative to configRoot.";
+      };
+      inputName = mkOption {
+        type = types.nonEmptyStr;
+        default = "nixdb";
+        description = "Name of the nixdb input in the downstream flake.";
+      };
+      inputUrl = mkOption {
+        type = types.nonEmptyStr;
+        default = "github:MrShitFox/nixdb";
+        description = "Base flake URL used for targeted nixdb input updates.";
+      };
+      releaseRepository = mkOption {
+        type = types.nonEmptyStr;
+        default = "https://github.com/MrShitFox/nixdb.git";
+        description = "Public Git repository queried for stable release tags.";
+      };
+    };
+
+    _internal.instances = mkOption {
+      internal = true;
+      default = [ ];
+      description = "Normalized metadata registered by database engine modules.";
+      type = types.listOf (
+        types.submodule {
+          options = {
+            name = mkOption { type = types.nonEmptyStr; };
+            kind = mkOption { type = types.nonEmptyStr; };
+            serviceName = mkOption { type = types.nonEmptyStr; };
+            dataDir = mkOption { type = types.strMatching "^/.*"; };
+            mountPoint = mkOption { type = types.strMatching "^/.*"; };
+            projectId = mkOption { type = types.ints.between 1 4294967295; };
+            diskLimit = mkOption { type = sizeType; };
+            ports = mkOption { type = types.listOf types.port; };
+            firewallPorts = mkOption {
+              type = types.listOf types.port;
+              description = "Public TCP listener ports opened by the firewall.";
+            };
+            listeners = mkOption {
+              default = [ ];
+              description = "TCP listeners expected at runtime.";
+              type = types.listOf (
+                types.submodule {
+                  options = {
+                    address = mkOption { type = types.nonEmptyStr; };
+                    port = mkOption { type = types.port; };
+                  };
+                }
+              );
+            };
+            cpuWeight = mkOption { type = types.ints.between 1 10000; };
+            memoryHigh = mkOption { type = sizeType; };
+            memoryMax = mkOption { type = sizeType; };
+            memorySwapMax = mkOption {
+              type = sizeType;
+              default = "0";
+            };
+          };
+        }
+      );
+    };
+  };
+}

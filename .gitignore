@@ -1,0 +1,22 @@
+# Nix build outputs
+result
+result-*
+.direnv/
+.envrc.local
+
+# Local deployment and credential material
+hardware-configuration.nix
+credentials*.txt
+*.key
+*.pem
+*.sock
+*.log
+auth.json
+
+# Editors and operating systems
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store

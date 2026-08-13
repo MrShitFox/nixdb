@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -euo pipefail
+
+export NIXDB_CONFIG_ROOT=${1:-/etc/nixos}
+exec nixdb resources
