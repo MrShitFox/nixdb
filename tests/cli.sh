@@ -231,6 +231,22 @@ test_dragonfly_info_version_normalization \
   || fail 'Dragonfly INFO version format is not normalized for health'
 pass 'Dragonfly INFO version format is normalized for health'
 
+test_dragonfly_memcached_probe_uses_eof_exchange() (
+  source_cli "$manifest" "$test_root/non-git"
+  credential_for() { jq -n '{address:"127.0.0.1",ports:{memcached:11211}}'; }
+  probe_host() { printf '%s\n' "$1"; }
+  nc() {
+    cat >"$test_root/memcached-request"
+    printf 'STORED\r\nVALUE fixture 0 7\r\nhealthy\r\nEND\r\n'
+  }
+  check_dragonfly_memcached dragonfly-example
+  grep -F 'set nixdb_health_dragonfly_example_' "$test_root/memcached-request" >/dev/null
+  ! grep -F quit "$test_root/memcached-request" >/dev/null
+)
+test_dragonfly_memcached_probe_uses_eof_exchange \
+  || fail 'Dragonfly Memcached health probe does not use an EOF-driven exchange'
+pass 'Dragonfly Memcached health probe uses an EOF-driven exchange'
+
 test_redis_info_and_config_normalization() (
   source_cli "$manifest" "$test_root/non-git"
   credential_for() { jq -n '{unixSocket:null}'; }

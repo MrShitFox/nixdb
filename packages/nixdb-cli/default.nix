@@ -14,6 +14,7 @@
   iproute2,
   jq,
   nix,
+  netcat-openbsd,
   openssh,
   redis,
   systemd,
@@ -37,6 +38,7 @@ writeShellApplication {
     iproute2
     jq
     nix
+    netcat-openbsd
     openssh
     redis
     systemd

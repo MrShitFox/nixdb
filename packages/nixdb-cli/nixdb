@@ -1417,10 +1417,8 @@ check_dragonfly_memcached() {
   host=$(probe_host "$(jq -r .address <<<"$credential")")
   port=$(jq -r .ports.memcached <<<"$credential")
   key="nixdb_health_${name//-/_}_$$"
-  exec {memcached_fd}<>"/dev/tcp/$host/$port" || return 1
-  printf 'set %s 0 2 7\r\nhealthy\r\nget %s\r\nquit\r\n' "$key" "$key" >&"$memcached_fd"
-  reply=$(cat <&"$memcached_fd")
-  exec {memcached_fd}>&-
+  reply=$(printf 'set %s 0 2 7\r\nhealthy\r\nget %s\r\n' "$key" "$key" \
+    | nc -w 5 "$host" "$port") || return 1
   grep -Fq 'STORED' <<<"$reply" && grep -Fq 'healthy' <<<"$reply"
 }
 
