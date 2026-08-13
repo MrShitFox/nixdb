@@ -63,5 +63,57 @@
       memoryHigh = "1G";
       memoryMax = "2G";
     };
+
+    redis.instances.redis-example = {
+      dataDir = "/srv/databases/redis/redis-example";
+      mountPoint = "/";
+      projectId = 2004;
+      diskLimit = "2G";
+      port = 6379;
+      maxMemory = "1G";
+      maxMemoryPolicy = "allkeys-lru";
+      cpuWeight = 100;
+      memoryHigh = "1200M";
+      memoryMax = "2G";
+      persistence = {
+        appendOnly = true;
+        appendFsync = "always";
+      };
+      authentication.users.app = {
+        password = "CHANGE_ME";
+        commands = [
+          "+@read"
+          "+@write"
+        ];
+        keys = [ "~app:*" ];
+        channels = [ "&app:*" ];
+      };
+      extraConfig."repl-diskless-sync-delay" = 5;
+    };
+
+    dragonfly.instances.dragonfly-example = {
+      dataDir = "/srv/databases/dragonfly/dragonfly-example";
+      mountPoint = "/";
+      projectId = 2005;
+      diskLimit = "2G";
+      port = 6381;
+      maxMemory = "1G";
+      cacheMode = true;
+      cpuWeight = 100;
+      memoryHigh = "1200M";
+      memoryMax = "2G";
+      memcached.port = 11211;
+      admin.port = 16379;
+      authentication.users.app = {
+        password = "CHANGE_ME";
+        commands = [
+          "+@read"
+          "+@write"
+        ];
+        keys = [ "~app:*" ];
+        channels = [ "&app:*" ];
+      };
+      extraFlags.num_shards = 2;
+    };
   };
 }

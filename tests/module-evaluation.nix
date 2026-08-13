@@ -47,6 +47,80 @@ let
         lib.mkForce "/srv/databases/mongodb/mongo-example";
     }
   ];
+  duplicateInMemoryPort = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.memcached.port = lib.mkForce 6379;
+    }
+  ];
+  invalidRedisMemory = mkSystem [
+    {
+      services.nixdb.redis.instances.redis-example.maxMemory = lib.mkForce "3G";
+    }
+  ];
+  invalidDragonflyMemory = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.maxMemory = lib.mkForce "3G";
+    }
+  ];
+  invalidDragonflyThreadMemory = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.maxMemory = lib.mkForce "128M";
+    }
+  ];
+  invalidDragonflyAof = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.persistence.aof.enable = true;
+    }
+  ];
+  invalidDragonflyNativeSnapshotFilename = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.persistence.dbFilename = "dump.rdb";
+    }
+  ];
+  invalidDragonflyTieringPath = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.tiering = {
+        enable = true;
+        mountPoint = "/";
+        prefix = "/srv/unmanaged-dragonfly-tier";
+      };
+    }
+  ];
+  invalidRedisTls = mkSystem [
+    {
+      services.nixdb.redis.instances.redis-example.tls.enable = true;
+    }
+  ];
+  invalidDragonflyTls = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.tls.enable = true;
+    }
+  ];
+  invalidRedisRawCollision = mkSystem [
+    {
+      services.nixdb.redis.instances.redis-example.extraConfig.port = 6390;
+    }
+  ];
+  invalidDragonflyRawCollision = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.extraFlags.port = 6390;
+    }
+  ];
+  invalidDragonflyAclUser = mkSystem [
+    {
+      services.nixdb.dragonfly.instances.dragonfly-example.authentication.users."bad.user" = {
+        password = "CHANGE_ME";
+      };
+    }
+  ];
+  socketOnlyRedis = mkSystem [
+    {
+      services.nixdb.redis.instances.redis-example = {
+        port = lib.mkForce null;
+        unixSocket = lib.mkForce "/run/redis-example/redis.sock";
+      };
+    }
+  ];
   invalidMount = mkSystem [
     {
       services.nixdb.mongodb.instances.mongo-example.mountPoint = lib.mkForce "/missing";
@@ -91,7 +165,8 @@ let
 in
 assert evaluationSucceeds valid;
 assert evaluationSucceeds minimal;
-assert builtins.length manifest.instances == 3;
+assert evaluationSucceeds socketOnlyRedis;
+assert builtins.length manifest.instances == 5;
 assert manifest.schemaVersion == 1;
 assert manifest.instances != [ ];
 assert (builtins.head manifest.instances).serviceName != "";
@@ -104,9 +179,24 @@ assert evaluationFails invalidMount;
 assert evaluationFails invalidMemory;
 assert evaluationFails invalidMongoCache;
 assert evaluationFails invalidMysqlBuffer;
+assert evaluationFails duplicateInMemoryPort;
+assert evaluationFails invalidRedisMemory;
+assert evaluationFails invalidDragonflyMemory;
+assert evaluationFails invalidDragonflyThreadMemory;
+assert evaluationFails invalidDragonflyAof;
+assert evaluationFails invalidDragonflyNativeSnapshotFilename;
+assert evaluationFails invalidDragonflyTieringPath;
+assert evaluationFails invalidRedisTls;
+assert evaluationFails invalidDragonflyTls;
+assert evaluationFails invalidRedisRawCollision;
+assert evaluationFails invalidDragonflyRawCollision;
+assert evaluationFails invalidDragonflyAclUser;
 pkgs.runCommand "nixdb-module-evaluation" { inherit manifestJSON; } ''
   printf '%s' "$manifestJSON" > manifest.json
-  ${lib.getExe pkgs.jq} -e '.schemaVersion == 1 and (.instances | length == 3)' manifest.json >/dev/null
+  ${lib.getExe pkgs.jq} -e '.schemaVersion == 1 and (.instances | length == 5)
+    and (.versions.redis == "8.10.0") and (.versions.dragonfly == "1.40.1")
+    and ([.instances[].engine] | index("redis") != null)
+    and ([.instances[].engine] | index("dragonfly") != null)' manifest.json >/dev/null
   if ${lib.getExe pkgs.gnugrep} -F ${lib.escapeShellArg secret} manifest.json; then
     echo 'runtime manifest leaked the fixture password' >&2
     exit 1

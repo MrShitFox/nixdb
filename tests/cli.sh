@@ -20,21 +20,31 @@ fail() {
 }
 
 make_manifest() {
-  local path=$1 mongo=${2:-8.2.11} mysql=${3:-8.4.10} manticore=${4:-28.6.6}
+  local path=$1 mongo=${2:-8.2.11} mysql=${3:-8.4.10} manticore=${4:-28.6.6} redis=${5:-8.10.0} dragonfly=${6:-1.40.1}
   jq -n \
-    --arg mongo "$mongo" --arg mysql "$mysql" --arg manticore "$manticore" \
+    --arg mongo "$mongo" --arg mysql "$mysql" --arg manticore "$manticore" --arg redis "$redis" --arg dragonfly "$dragonfly" \
     '{schemaVersion:1,framework:{version:"0.2.0",revision:("a"*40)},
       operator:{configRoot:"/example",flakeHost:"db-host",configHint:"/example/databases.nix",
         inputName:"nixdb",inputUrl:"github:example/nixdb",releaseRepository:"https://example.invalid/nixdb.git"},
       slice:{memoryHigh:"4G",memoryMax:"6G",memorySwapMax:"0"},
-      versions:{mongodb:$mongo,mysql:$mysql,manticore:$manticore,
+      versions:{mongodb:$mongo,mysql:$mysql,manticore:$manticore,redis:$redis,dragonfly:$dragonfly,
         manticoreComponents:{buddy:"4.2.0",columnar:"13.8.3",secondary:"13.8.3",knn:"13.8.3",
           embeddings:"1.1.1",executor:"1.4.2",backup:"1.10.2",load:"1.25.0",tzdata:"1.0.1",galera:"3.37"}},
       instances:[{name:"mongo-example",engine:"mongodb",serviceName:"mongo-example",
         dataDir:"/srv/db",mountPoint:"/",projectId:2001,diskLimit:"2G",ports:[27017],
         listeners:[{address:"127.0.0.1",port:27017}],cpuWeight:100,memoryHigh:"1G",
         memoryMax:"2G",memorySwapMax:"0",internalCache:{kind:"WiredTiger cache",value:"1G"},
-        engineMetadata:{}}]}' >"$path"
+        engineMemoryLimit:null,engineMetadata:{}},
+      {name:"redis-example",engine:"redis",serviceName:"redis-example",
+        dataDir:"/srv/redis",mountPoint:"/",projectId:2002,diskLimit:"2G",ports:[6379],
+        listeners:[{address:"127.0.0.1",port:6379}],cpuWeight:100,memoryHigh:"1200M",
+        memoryMax:"2G",memorySwapMax:"0",engineMemoryLimit:"1G",internalCache:{kind:"Redis maxmemory",value:"1G"},
+        engineMetadata:{maxMemory:"1G",maxMemoryPolicy:"allkeys-lru",maxMemorySamples:5,persistence:"AOF",appendFsync:"always",unixSocket:null,modules:["redisbloom","redisearch","rejson","redistimeseries"]}},
+      {name:"dragonfly-example",engine:"dragonfly",serviceName:"dragonfly-example",
+        dataDir:"/srv/dragonfly",mountPoint:"/",projectId:2003,diskLimit:"2G",ports:[6381,11211,16379],
+        listeners:[{address:"127.0.0.1",port:6381},{address:"127.0.0.1",port:11211},{address:"127.0.0.1",port:16379}],cpuWeight:100,memoryHigh:"1200M",
+        memoryMax:"2G",memorySwapMax:"0",engineMemoryLimit:"1G",internalCache:{kind:"Dragonfly maxmemory",value:"1G"},
+        engineMetadata:{maxMemory:"1G",cacheMode:true,snapshot:{dbFilename:"dump-{timestamp}",dfSnapshotFormat:true,snapshotCron:"*/5 * * * *"},tiering:{enable:false},memcached:{port:11211},admin:{port:16379}}}]}' >"$path"
 }
 
 make_lock() {
@@ -126,6 +136,8 @@ test_non_git_status_and_config() (
   runtime_mongodb_version() { echo 8.2.11; }
   runtime_mysql_version() { echo 8.4.10; }
   runtime_manticore_version() { echo 28.6.6; }
+  runtime_redis_version() { echo 8.10.0; }
+  runtime_dragonfly_version() { echo 1.40.1; }
   nixos-version() { echo test-nixos; }
   systemctl() {
     case "$1" in
@@ -141,6 +153,23 @@ test_non_git_status_and_config() (
 )
 test_non_git_status_and_config || fail 'read-only status/config work without Git'
 pass 'read-only status/config work without Git'
+
+test_in_memory_engine_operator_output() (
+  source_cli "$manifest" "$test_root/non-git"
+  runtime_redis_version() { echo 8.10.0; }
+  runtime_dragonfly_version() { echo 1.40.1; }
+  nixos-version() { echo test-nixos; }
+  versions=$(cmd_versions --json)
+  jq -e '.redis.declared == "8.10.0" and .redis.runtime == "8.10.0"
+    and .dragonfly.declared == "1.40.1" and .dragonfly.runtime == "1.40.1"' <<<"$versions" >/dev/null
+  config=$(cmd_config)
+  grep -F 'Redis instances' <<<"$config" >/dev/null
+  grep -F 'Dragonfly instances' <<<"$config" >/dev/null
+  grep -F 'appendfsync=always' <<<"$config" >/dev/null
+  ! grep -F password <<<"$config"
+)
+test_in_memory_engine_operator_output || fail 'Redis and Dragonfly version/config output is incomplete or leaks secrets'
+pass 'Redis and Dragonfly participate in versions and sanitized config output'
 
 test_missing_manifest() (
   source_cli "$test_root/absent.json" "$test_root/non-git"
@@ -360,6 +389,30 @@ test_plan_no_mutation() (
 test_plan_no_mutation || fail 'candidate plan is isolated from the host lock'
 pass 'candidate plan detects DB changes without mutating host lock'
 
+candidate_inmemory_manifest_file="$test_root/candidate-inmemory-manifest.json"
+make_manifest "$candidate_inmemory_manifest_file" 8.2.11 8.4.10 28.6.6 8.10.1 1.40.2
+test_in_memory_engine_upgrade_guard() (
+  source_cli "$manifest" "$plan_repo"
+  nix() {
+    if [[ $1 == flake && $2 == lock ]]; then
+      return
+    elif [[ $1 == eval ]]; then
+      cat "$candidate_inmemory_manifest_file"
+    else
+      return 99
+    fi
+  }
+  prepare_candidate v0.3.0
+  [[ "$db_upgrade_detected" == true ]]
+  output=$(print_upgrade_block 2>&1)
+  grep -F 'Redis:' <<<"$output" >/dev/null
+  grep -F 'Dragonfly:' <<<"$output" >/dev/null
+  grep -F '8.10.1' <<<"$output" >/dev/null
+  grep -F '1.40.2' <<<"$output" >/dev/null
+)
+test_in_memory_engine_upgrade_guard || fail 'Redis and Dragonfly package changes do not join the DB upgrade guard'
+pass 'Redis and Dragonfly versions are guarded before activation'
+
 test_db_upgrade_guard() (
   source_cli "$manifest" "$test_root/non-git"
   current_manifest=$(cat "$manifest")
@@ -411,6 +464,8 @@ test_non_git_health() (
   check_mongodb_auth() { :; }
   check_mysql_auth() { :; }
   check_manticore_auth() { :; }
+  check_redis_auth() { :; }
+  check_dragonfly_auth() { :; }
   run_health | grep -F 'nixdb health: PASS' >/dev/null
 )
 test_non_git_health || fail 'health retains an accidental Git dependency'
@@ -718,6 +773,8 @@ test_status_json_and_ordering() (
   runtime_mongodb_version() { echo 8.2.11; }
   runtime_mysql_version() { echo 8.4.10; }
   runtime_manticore_version() { echo 28.6.6; }
+  runtime_redis_version() { echo 8.10.0; }
+  runtime_dragonfly_version() { echo 1.40.1; }
   nixos-version() { echo test-nixos; }
   systemctl() {
     case "$1" in
