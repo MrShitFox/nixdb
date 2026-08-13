@@ -202,7 +202,7 @@ pass 'deployment commands require Git while read-only commands do not'
 mock_bin="$test_root/mock-bin"
 mkdir -p "$mock_bin"
 cat >"$mock_bin/sudo" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/sh
 printf '%s\n' "$@" >"$SUDO_CAPTURE"
 EOF
 chmod +x "$mock_bin/sudo"
