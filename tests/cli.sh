@@ -148,6 +148,28 @@ if test_invalid_schema >/dev/null 2>&1; then
 fi
 pass 'incompatible manifest schema is rejected'
 
+legacy_operator="$test_root/legacy-operator.json"
+jq -n '{frameworkVersion:"0.2.0",frameworkRevision:("a"*40),versions:{
+  mongodb:"8.2.11",mysql:"8.4.10",manticore:"28.6.6",
+  manticoreBuddy:"4.2.0",manticoreColumnar:"13.8.3",manticoreSecondary:"13.8.3",
+  manticoreKnn:"13.8.3",manticoreEmbeddings:"1.1.1",manticoreExecutor:"1.4.2",
+  manticoreBackup:"1.10.2",manticoreLoad:"1.25.0",manticoreTzdata:"1.0.1",
+  manticoreGalera:"3.37"}}' >"$legacy_operator"
+test_legacy_version_fallback() (
+  export NIXDB_SOURCE_ONLY=1
+  export NIXDB_OPERATOR_CONFIG="$legacy_operator"
+  export NIXDB_MANIFEST="$test_root/legacy-missing-manifest.json"
+  export NIXDB_CONFIG_ROOT="$test_root/non-git"
+  # shellcheck source=../packages/nixdb-cli/nixdb
+  source "$CLI_SOURCE"
+  data=$(active_version_manifest)
+  [[ $(jq -r .schemaVersion <<<"$data") == 0 ]]
+  [[ $(jq -r .versions.mongodb <<<"$data") == 8.2.11 ]]
+  [[ $(jq -r .versions.manticoreComponents.buddy <<<"$data") == 4.2.0 ]]
+)
+test_legacy_version_fallback || fail 'v0.2.0 version metadata fallback failed'
+pass 'planning can bootstrap safely from v0.2.0 operator version metadata'
+
 test_invalid_instances() (
   source_cli "$manifest" "$test_root/non-git"
   validate_instance 'mongo-example;touch /tmp/pwned'

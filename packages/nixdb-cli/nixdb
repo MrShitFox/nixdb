@@ -78,6 +78,54 @@ manifest_json() {
   cat -- "$MANIFEST"
 }
 
+active_version_manifest() {
+  if [[ -r "$MANIFEST" ]] \
+    && jq -e '.schemaVersion == 1 and (.versions | type == "object")' "$MANIFEST" >/dev/null 2>&1; then
+    cat -- "$MANIFEST"
+    return
+  fi
+
+  # v0.2.0 predates the sanitized runtime manifest, but its declarative
+  # operator file contains the exact framework and bundled DB versions needed
+  # for the pre-activation upgrade guard. This fallback is deliberately
+  # version-only: read-only instance operations still require schema 1.
+  [[ -r "$OPERATOR_CONFIG" ]] \
+    || die "active version metadata is unavailable (no schema-1 manifest or legacy operator config)"
+  jq -ce '
+    select(.frameworkVersion != null and .frameworkRevision != null and (.versions | type == "object"))
+    | {
+        schemaVersion: 0,
+        framework: {version: .frameworkVersion, revision: .frameworkRevision},
+        versions: {
+          mongodb: .versions.mongodb,
+          mysql: .versions.mysql,
+          manticore: .versions.manticore,
+          manticoreComponents: {
+            search: .versions.manticore,
+            buddy: .versions.manticoreBuddy,
+            columnar: .versions.manticoreColumnar,
+            secondary: .versions.manticoreSecondary,
+            knn: .versions.manticoreKnn,
+            embeddings: .versions.manticoreEmbeddings,
+            executor: .versions.manticoreExecutor,
+            backup: .versions.manticoreBackup,
+            load: .versions.manticoreLoad,
+            tzdata: .versions.manticoreTzdata,
+            galera: .versions.manticoreGalera
+          }
+        },
+        instances: []
+      }
+    | select(
+        .versions.mongodb != null
+        and .versions.mysql != null
+        and .versions.manticore != null
+        and ([.versions.manticoreComponents[]] | all(. != null))
+      )
+  ' "$OPERATOR_CONFIG" \
+    || die "legacy operator config lacks complete DB version metadata"
+}
+
 credentials_json() {
   [[ -r "$HEALTH_CREDENTIALS" ]] \
     || die "root-only health credentials are missing or unreadable: $HEALTH_CREDENTIALS"
@@ -757,7 +805,7 @@ prepare_candidate() {
   candidate_lock="$candidate_root/flake.lock"
   candidate_revision=$(locked_input_field_from "$candidate_lock" rev)
   candidate_input=$(locked_input_json_from "$candidate_lock")
-  current_manifest=$(manifest_json)
+  current_manifest=$(active_version_manifest)
   current_input=$(locked_input_json_from "$CONFIG_ROOT/flake.lock")
   db_upgrade_detected=false
   for engine in mongodb mysql manticore; do
@@ -980,7 +1028,7 @@ disarm_transaction_traps() {
 deploy_candidate() {
   local allow_upgrade=$1 old_manifest old_input new_input new_system new_commit
   enforce_db_upgrade_guard "$allow_upgrade"
-  old_manifest=$(manifest_json)
+  old_manifest=$(active_version_manifest)
   tx_old_commit=$(git -C "$CONFIG_ROOT" rev-parse --verify HEAD)
   tx_old_branch=$(git -C "$CONFIG_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   tx_old_system=$(readlink -f "$CURRENT_SYSTEM")
