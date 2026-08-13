@@ -2,7 +2,6 @@
   config,
   lib,
   nixdbCli,
-  nixdbPackages,
   nixdbRelease,
   ...
 }:
@@ -22,7 +21,6 @@ let
       cfg.operator.inventoryFile
     else
       "${cfg.operator.configRoot}/${cfg.operator.inventoryFile}";
-  componentVersions = nixdbPackages.manticore.componentVersions;
   manifest = {
     schemaVersion = 1;
     framework = {
@@ -41,7 +39,7 @@ let
       mongodb = cfg.mongodb.declaredVersion;
       mysql = cfg.mysql.declaredVersion;
       manticore = cfg.manticore.declaredVersion;
-      manticoreComponents = componentVersions;
+      manticoreComponents = cfg.manticore.componentVersions;
     };
     instances = map (
       instance:

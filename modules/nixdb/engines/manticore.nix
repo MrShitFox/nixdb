@@ -164,6 +164,23 @@ in
       type = lib.types.nonEmptyStr;
       default = nixdbVersions.manticore;
     };
+    componentVersions = lib.mkOption {
+      type = lib.types.attrsOf lib.types.nonEmptyStr;
+      default = {
+        search = nixdbVersions.manticore;
+        buddy = nixdbVersions.manticoreBuddy;
+        columnar = nixdbVersions.manticoreColumnar;
+        secondary = nixdbVersions.manticoreSecondary;
+        knn = nixdbVersions.manticoreKnn;
+        embeddings = nixdbVersions.manticoreEmbeddings;
+        executor = nixdbVersions.manticoreExecutor;
+        backup = nixdbVersions.manticoreBackup;
+        load = nixdbVersions.manticoreLoad;
+        tzdata = nixdbVersions.manticoreTzdata;
+        galera = nixdbVersions.manticoreGalera;
+      };
+      description = "Declared versions of components coupled to the selected Manticore bundle.";
+    };
     instances = lib.mkOption {
       default = { };
       type = lib.types.attrsOf (
@@ -207,6 +224,11 @@ in
       {
         assertion = lib.getVersion manticorePkg == cfg.declaredVersion;
         message = "services.nixdb.manticore: declared version ${cfg.declaredVersion} does not match package ${lib.getVersion manticorePkg}.";
+      }
+      {
+        assertion =
+          !(manticorePkg ? componentVersions) || manticorePkg.componentVersions == cfg.componentVersions;
+        message = "services.nixdb.manticore: declared componentVersions do not match the selected package bundle metadata.";
       }
       {
         assertion = lib.all (instance: instance.httpPort < 65535) (lib.attrValues manticore);
