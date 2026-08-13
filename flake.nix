@@ -15,20 +15,25 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       versions = import ./versions;
       release = {
-        version = "0.2.3";
+        version = "0.3.0";
         revision = self.rev or self.dirtyRev or "unknown";
       };
 
       mkPackageSet =
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [ "dragonfly" ];
+          };
           mongodbPkgs = import inputs.mongodb-nixpkgs {
             inherit system;
             config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [ "mongodb-ce" ];
           };
           mysqlPkgs = import inputs.mysql-nixpkgs { inherit system; };
           manticore = pkgs.callPackage ./packages/manticore { };
+          redis = pkgs.callPackage ./packages/redis { };
+          dragonfly = pkgs.callPackage ./packages/dragonfly { };
           components = manticore.componentVersions;
           declaredComponents = {
             search = versions.manticore;
@@ -49,11 +54,16 @@
         in
         assert nixpkgs.lib.assertMsg (mismatches == [ ])
           "Manticore component declarations disagree with the packaged bundle: ${builtins.concatStringsSep ", " mismatches}";
+        assert nixpkgs.lib.assertMsg (
+          redis.version == versions.redis
+        ) "Redis declaration ${versions.redis} disagrees with packaged Redis ${redis.version}";
+        assert nixpkgs.lib.assertMsg (dragonfly.version == versions.dragonfly)
+          "Dragonfly declaration ${versions.dragonfly} disagrees with packaged Dragonfly ${dragonfly.version}";
         {
           mongodb = mongodbPkgs.mongodb-ce;
           mongosh = mongodbPkgs.mongosh;
           mysql = mysqlPkgs.mysql84;
-          inherit manticore;
+          inherit manticore redis dragonfly;
         };
 
       nixdbModule =
@@ -87,7 +97,10 @@
       packages = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [ "dragonfly" ];
+          };
           dbPackages = mkPackageSet system;
         in
         dbPackages
@@ -96,6 +109,8 @@
           nixdb = pkgs.callPackage ./packages/nixdb-cli { };
           nixdb-cli = pkgs.callPackage ./packages/nixdb-cli { };
           manticoreDeployed = dbPackages.manticore;
+          redisDeployed = dbPackages.redis;
+          dragonflyDeployed = dbPackages.dragonfly;
           vm-integration-test = import ./tests/vm-integration.nix {
             inherit pkgs nixdbModule;
           };
@@ -121,7 +136,10 @@
       checks = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [ "dragonfly" ];
+          };
         in
         {
           module-evaluation = import ./tests/module-evaluation.nix {

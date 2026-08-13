@@ -1,4 +1,6 @@
 {
+  redis = "8.10.0";
+  dragonfly = "1.40.1";
   mongodb = "8.2.11";
   mysql = "8.4.10";
   manticore = "28.6.6";
