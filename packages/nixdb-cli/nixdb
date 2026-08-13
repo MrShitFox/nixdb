@@ -78,19 +78,7 @@ manifest_json() {
   cat -- "$MANIFEST"
 }
 
-active_version_manifest() {
-  if [[ -r "$MANIFEST" ]] \
-    && jq -e '.schemaVersion == 1 and (.versions | type == "object")' "$MANIFEST" >/dev/null 2>&1; then
-    cat -- "$MANIFEST"
-    return
-  fi
-
-  # v0.2.0 predates the sanitized runtime manifest, but its declarative
-  # operator file contains the exact framework and bundled DB versions needed
-  # for the pre-activation upgrade guard. This fallback is deliberately
-  # version-only: read-only instance operations still require schema 1.
-  [[ -r "$OPERATOR_CONFIG" ]] \
-    || die "active version metadata is unavailable (no schema-1 manifest or legacy operator config)"
+legacy_version_manifest() {
   jq -ce '
     select(.frameworkVersion != null and .frameworkRevision != null and (.versions | type == "object"))
     | {
@@ -122,7 +110,23 @@ active_version_manifest() {
         and .versions.manticore != null
         and ([.versions.manticoreComponents[]] | all(. != null))
       )
-  ' "$OPERATOR_CONFIG" \
+  ' "$@"
+}
+
+active_version_manifest() {
+  if [[ -r "$MANIFEST" ]] \
+    && jq -e '.schemaVersion == 1 and (.versions | type == "object")' "$MANIFEST" >/dev/null 2>&1; then
+    cat -- "$MANIFEST"
+    return
+  fi
+
+  # v0.2.0 predates the sanitized runtime manifest, but its declarative
+  # operator file contains the exact framework and bundled DB versions needed
+  # for the pre-activation upgrade guard. This fallback is deliberately
+  # version-only: read-only instance operations still require schema 1.
+  [[ -r "$OPERATOR_CONFIG" ]] \
+    || die "active version metadata is unavailable (no schema-1 manifest or legacy operator config)"
+  legacy_version_manifest "$OPERATOR_CONFIG" \
     || die "legacy operator config lacks complete DB version metadata"
 }
 
@@ -820,6 +824,21 @@ resolve_plan_target() {
   esac
 }
 
+evaluate_candidate_manifest() {
+  local candidate_root=$1 candidate_operator
+  if ! candidate_manifest=$(nix eval --json \
+    "$candidate_root#nixosConfigurations.${FLAKE_HOST}.config.services.nixdb._internal.runtimeManifest" \
+    2>/dev/null); then
+    candidate_operator=$(nix eval --raw \
+      "$candidate_root#nixosConfigurations.${FLAKE_HOST}.config.environment.etc.\"nixdb/operator.json\".text")
+    candidate_manifest=$(legacy_version_manifest <<<"$candidate_operator") \
+      || die 'legacy candidate lacks complete DB version metadata'
+  fi
+  jq -e '(.schemaVersion == 0 or .schemaVersion == 1) and (.versions | type == "object")' \
+    <<<"$candidate_manifest" >/dev/null \
+    || die 'candidate produced unsupported DB version metadata'
+}
+
 prepare_candidate() {
   local target_ref=$1 candidate_root
   require_deployment_repo
@@ -835,10 +854,7 @@ prepare_candidate() {
     cd "$candidate_root"
     nix flake lock --override-input "$INPUT_NAME" "${INPUT_URL}/${target_ref}"
   )
-  candidate_manifest=$(nix eval --json \
-    "$candidate_root#nixosConfigurations.${FLAKE_HOST}.config.services.nixdb._internal.runtimeManifest")
-  jq -e '.schemaVersion == 1 and (.versions | type == "object")' <<<"$candidate_manifest" >/dev/null \
-    || die 'candidate produced an unsupported runtime manifest'
+  evaluate_candidate_manifest "$candidate_root"
   candidate_lock="$candidate_root/flake.lock"
   candidate_revision=$(locked_input_field_from "$candidate_lock" rev)
   candidate_input=$(locked_input_json_from "$candidate_lock")

@@ -170,6 +170,26 @@ test_legacy_version_fallback() (
 test_legacy_version_fallback || fail 'v0.2.0 version metadata fallback failed'
 pass 'planning can bootstrap safely from v0.2.0 operator version metadata'
 
+test_legacy_candidate_fallback() (
+  source_cli "$manifest" "$test_root/non-git"
+  nix() {
+    if [[ $1 == eval && $2 == --json ]]; then
+      return 1
+    fi
+    if [[ $1 == eval && $2 == --raw ]]; then
+      cat "$legacy_operator"
+      return
+    fi
+    return 99
+  }
+  candidate_manifest=''
+  evaluate_candidate_manifest /fake-candidate
+  [[ $(jq -r .schemaVersion <<<"$candidate_manifest") == 0 ]]
+  [[ $(jq -r .framework.version <<<"$candidate_manifest") == 0.2.0 ]]
+)
+test_legacy_candidate_fallback || fail 'legacy target candidate metadata fallback failed'
+pass 'exact deploy can evaluate a pre-manifest v0.2.0 candidate'
+
 test_invalid_instances() (
   source_cli "$manifest" "$test_root/non-git"
   validate_instance 'mongo-example;touch /tmp/pwned'
