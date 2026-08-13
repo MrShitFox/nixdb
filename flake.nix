@@ -141,6 +141,21 @@
                 bash ${./tests/no-secrets.sh} ${self}
                 touch "$out"
               '';
+          shellcheck =
+            pkgs.runCommand "nixdb-shellcheck"
+              {
+                nativeBuildInputs = [ pkgs.shellcheck ];
+              }
+              ''
+                shellcheck \
+                  ${./packages/nixdb-cli/nixdb} \
+                  ${./tests/no-secrets.sh} \
+                  ${./scripts/check-health} \
+                  ${./scripts/check-quotas} \
+                  ${./scripts/check-resources} \
+                  ${./scripts/check-versions}
+                touch "$out"
+              '';
         }
       );
 

@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -Eeuo pipefail
 
 readonly OPERATOR_CONFIG="${NIXDB_OPERATOR_CONFIG:-/etc/nixdb/operator.json}"
