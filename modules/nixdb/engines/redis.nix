@@ -786,6 +786,14 @@ in
       {
         assertion = lib.all (
           instance:
+          !instance.tls.enable || !instance.tls.authClients
+          || (instance.tls.healthClientCertFile != null && instance.tls.healthClientKeyFile != null)
+        ) (lib.attrValues instances);
+        message = "services.nixdb.redis: tls.authClients requires healthClientCertFile and healthClientKeyFile for mutual TLS health probes.";
+      }
+      {
+        assertion = lib.all (
+          instance:
           !instance.tls.authClients
           || (
             instance.tls.enable

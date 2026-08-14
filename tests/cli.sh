@@ -174,9 +174,9 @@ pass 'Redis and Dragonfly participate in versions and sanitized config output'
 test_in_memory_runtime_versions_use_managed_services() (
   source_cli "$manifest" "$test_root/non-git"
   mkdir -p "$test_root/pinned-redis/bin" "$test_root/pinned-dragonfly/bin"
-  printf '#!/usr/bin/env bash\nprintf "Redis server v=8.10.0 sha=fixture\\n"\n' \
+  printf '#!/bin/sh\nprintf "Redis server v=8.10.0 sha=fixture\\n"\n' \
     >"$test_root/pinned-redis/bin/redis-server"
-  printf '#!/usr/bin/env bash\nprintf "dragonfly v1.40.1\\n"\n' \
+  printf '#!/bin/sh\nprintf "dragonfly v1.40.1\\n"\n' \
     >"$test_root/pinned-dragonfly/bin/dragonfly"
   chmod +x "$test_root/pinned-redis/bin/redis-server" "$test_root/pinned-dragonfly/bin/dragonfly"
   systemctl() {

@@ -64,8 +64,25 @@ it does not grant redistribution rights.
 - License: Redis 8 is offered by upstream under a tri-license: Redis Source
   Available License 2.0 (RSALv2), Server Side Public License v1 (SSPLv1), or
   GNU Affero General Public License v3 (AGPLv3). The bundled module sources
-  carry the same upstream licensing model.
+  carry the same upstream licensing model:
+
+  | Bundled module | Repository | Revision | License (same tri-license as Redis 8) |
+  | --- | --- | --- | --- |
+  | RedisBloom | <https://github.com/RedisBloom/RedisBloom> | `f3b6639002f86248f9ba39b6fafee39ca7f863b6` | RSALv2 / SSPLv1 / AGPLv3 |
+  | RediSearch | <https://github.com/RediSearch/RediSearch> | `294c88bca92b3e686d336dc165bcf68512d91ac5` | RSALv2 / SSPLv1 / AGPLv3 |
+  | RedisJSON | <https://github.com/RedisJSON/RedisJSON> | `2f00c990070c9e242f53dfcf53e632fe42f15947` | RSALv2 / SSPLv1 / AGPLv3 |
+  | RedisTimeSeries | <https://github.com/RedisTimeSeries/RedisTimeSeries> | `66f6f219913c1fdc6a6669ca839ea06313fb9ba1` | RSALv2 / SSPLv1 / AGPLv3 |
+
+  Vector sets are an in-tree Redis 8 feature, not a separate loadable module.
 - Reference: <https://redis.io/legal/licenses/>.
+- nixdb distribution choice: the Nix package `packages/redis/default.nix` sets
+  `meta.license = lib.licenses.agpl3Only` (AGPLv3-only). That is the license
+  under which nixdb distributes the built Redis binary and its bundled
+  modules. It does not limit the upstream tri-license offer; downstream
+  deployers must still review all three upstream options for their own use.
+  `BUILD_INTEL_SVS_OPT` is not enabled in the nixdb Redis build; the build
+  uses `BUILD_TLS=yes BUILD_COMPRESSION=yes USE_SYSTEMD=yes` with no
+  `BUILD_INTEL_SVS_OPT` flag.
 
 nixdb does not change, select on a user's behalf, or relicense any Redis term.
 Review the current upstream terms for the intended deployment model.
@@ -75,9 +92,18 @@ Review the current upstream terms for the intended deployment model.
 - Package expression: `packages/dragonfly/default.nix`.
 - Artifact origin: Dragonfly's official immutable GitHub release artifact,
   SHA-256 pinned by Nix.
-- License: Business Source License 1.1 (BSL 1.1); the pinned upstream license
-  specifies its Change Date and change license. It is not GPL and is not
-  relicensed by nixdb.
+- License: Business Source License 1.1 (BSL 1.1) — explicitly source-available,
+  not OSI open-source. The pinned upstream license declares:
+
+  - Licensor: DragonflyDB, Ltd.
+  - Change Date: Nov 1, 2030 (or fourth anniversary of first distribution, whichever first).
+  - Change License: Apache License 2.0.
+  - Additional Use Grant: limited production use only as part of your own
+    product/service, not as an in-memory data store product/service and not as
+    a Service to third parties.
+
+  nixdb's own GPL-3.0-or-later does not relicense Dragonfly; Dragonfly remains
+  under BSL 1.1 as distributed by its licensor.
 - Reference: <https://github.com/dragonflydb/dragonfly/blob/v1.40.1/LICENSE.md>.
 
 Review Dragonfly's BSL additional-use grant and Change Date before deploying

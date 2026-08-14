@@ -601,6 +601,14 @@ in
       {
         assertion = lib.all (
           instance:
+          !instance.tls.enable
+          || (instance.tls.healthClientCertFile != null && instance.tls.healthClientKeyFile != null)
+        ) (lib.attrValues instances);
+        message = "services.nixdb.dragonfly: enabled TLS requires healthClientCertFile and healthClientKeyFile; Dragonfly v1.40.1 validates TLS with tls_ca_cert_file and requires mutual TLS for health probes.";
+      }
+      {
+        assertion = lib.all (
+          instance:
           !instance.tiering.enable
           || (
             instance.tiering.prefix != null
@@ -733,6 +741,7 @@ in
       ports = {
         redis = instance.port;
       }
+      // lib.optionalAttrs instance.tls.enable { tls = instance.port; }
       // lib.optionalAttrs (instance.memcached.port != 0) { memcached = instance.memcached.port; }
       // lib.optionalAttrs (instance.admin.port != 0) { admin = instance.admin.port; };
       tls = {
