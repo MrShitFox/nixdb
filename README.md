@@ -1,40 +1,47 @@
 # nixdb
 
-A modular NixOS database stack for running multiple independently configured
-database instances with reproducible version pinning, resource controls, and
-XFS project quotas.
+> ❄️ Declarative multi-database stack for NixOS.
 
-nixdb is a NixOS module plus an operator CLI. It currently supports standalone
-MongoDB, MySQL, Manticore Search, Redis Open Source, and Dragonfly instances.
-It does not provide clustering, replication/failover orchestration,
-database-content rollback, or a backup framework.
+Run **MongoDB · MySQL · Manticore Search · Redis · Dragonfly** as isolated, resource-controlled instances — from one Nix configuration.
 
-## Features
+[![Release](https://img.shields.io/github/v/release/MrShitFox/nixdb?label=release&color=2ea043)](https://github.com/MrShitFox/nixdb/releases/tag/v0.3.0)
+[![CI](https://img.shields.io/github/actions/workflow/status/MrShitFox/nixdb/ci.yml?branch=main&label=ci)](https://github.com/MrShitFox/nixdb/actions)
+[![NixOS](https://img.shields.io/badge/NixOS-5277C3?logo=nixos&logoColor=white)](https://nixos.org)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](COPYING)
+[![Engines](https://img.shields.io/badge/engines-5-informational)](#supported-engines)
 
-- isolated engine modules and multiple instances per engine;
-- independently pinned MongoDB, MySQL, Manticore, Redis Open Source, and
-  Dragonfly package sources;
-- a version-coupled Manticore Search, Buddy, Columnar, Secondary, and KNN bundle;
-- per-instance `CPUWeight`, `MemoryHigh`, `MemoryMax`, and internal cache controls;
-- XFS project quotas per data directory;
-- inventory-driven services, authentication bootstrap, and firewall ports;
-- evaluation-time checks for duplicate ports, paths, project IDs, and invalid resources;
-- a sanitized, schema-versioned runtime manifest for operator tooling;
-- Git-independent status, health, version, quota, resource, and config commands;
-- deployment planning, database-upgrade guards, transaction recovery, and rollback warnings;
-- a small extension contract for additional database engines.
+```text
+🗄️  5 database engines      ♻️  multiple instances per engine
+💾  XFS project quotas       🧠  engine + cgroup memory limits
+🩺  health / doctor / wait   🔄  guarded upgrades & rollback
+🔒  auth / ACL / TLS         ❄️  pure NixOS workflow
+```
 
-Only Linux/NixOS on `x86_64-linux` is currently supported. MongoDB Community
-Server is SSPL-licensed; review [third-party licensing](docs/third-party.md)
-before adopting it.
+One inventory. Reproducible packages. No hidden state.
 
-## Install as a flake input
+---
+
+## Quick start
+
+**30 seconds to your first instance.**
+
+Structure a downstream host:
+
+```text
+/etc/nixos/
+├── flake.nix
+├── configuration.nix
+├── hardware-configuration.nix   ← generated, never faked
+└── databases.nix                ← your inventory
+```
+
+**1 · `flake.nix` — pin `nixdb` v0.3.0**
 
 ```nix
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixdb.url = "github:MrShitFox/nixdb/v0.2.3";
+    nixdb.url = "github:MrShitFox/nixdb/v0.3.0";
   };
 
   outputs = { nixpkgs, nixdb, ... }: {
@@ -43,253 +50,414 @@ before adopting it.
       modules = [
         nixdb.nixosModules.default
         ./configuration.nix
-        ./databases.nix
       ];
     };
   };
 }
 ```
 
-The public API is `services.nixdb`. Host hardware, filesystems, credentials,
-paths, project IDs, ports, and resource policy remain in the downstream host
-repository.
-
-These examples name the v0.2.3 release target. Until that release is published,
-test an unpublished candidate through a local `path:` input as shown below.
-
-Initialize a downstream skeleton with:
+New host from template:
 
 ```console
-nix flake new -t github:MrShitFox/nixdb#single-host ./my-db-host
+nix flake new -t github:MrShitFox/nixdb/v0.3.0#single-host ./my-db-host
+nixos-generate-config --dir ./my-db-host
 ```
 
-The template intentionally omits `hardware-configuration.nix`. Generate the
-real file with `nixos-generate-config` and never substitute fake disk UUIDs.
+**2 · `configuration.nix` — wire the inventory**
 
-## Minimal inventory
+```nix
+{ ... }:
+{
+  imports = [
+    ./hardware-configuration.nix
+    ./databases.nix
+  ];
+}
+```
 
-The following values are deliberately non-production examples:
+**3 · `databases.nix` — declare a Redis instance**
 
 ```nix
 {
   services.nixdb = {
     enable = true;
 
-    operator = {
-      configRoot = "/etc/nixos";
-      flakeHost = "db-host";
-      inventoryFile = "databases.nix";
-    };
-
-    slice = {
-      memoryHigh = "8G";
-      memoryMax = "12G";
-      memorySwapMax = "0";
-    };
-
-    mongodb.instances.mongo-example = {
-      dataDir = "/srv/databases/mongodb/mongo-example";
+    redis.instances.cache = {
+      dataDir = "/var/lib/databases/redis/cache";
       mountPoint = "/";
       projectId = 2001;
-      diskLimit = "10G";
-      bindAddress = "127.0.0.1";
-      openFirewall = false;
-      port = 27017;
-      adminUser = "dbadmin";
-      password = "CHANGE_ME";
+      diskLimit = "20G";
+      port = 6379;
+
+      maxMemory = "4G";
+      maxMemoryPolicy = "allkeys-lru";
+      authentication.password = "CHANGE_ME";
+
+      memoryHigh = "5G";
+      memoryMax = "6G";
       cpuWeight = 100;
-      cacheGB = 1;
-      memoryHigh = "2G";
-      memoryMax = "3G";
     };
   };
 }
 ```
 
-The same inventory file may contain:
+All required fields are explicit: `dataDir` · `mountPoint` · `projectId` · `diskLimit` · `maxMemory` · `memoryHigh` · `memoryMax` · `cpuWeight`. No implicit sizing.
+
+**4 · Deploy**
+
+```console
+sudo nixos-rebuild switch --flake .#db-host
+nixdb status
+nixdb health
+```
+
+That's it. Instance is running, quota-enforced, cgroup-limited, and health-checked — declaratively.
+
+> Credentials stay in your private host repo and never appear in the sanitized manifest or CLI output.
+
+---
+
+## Add another database
+
+Mental model — one attrset per instance:
+
+```text
+services.nixdb.<engine>.instances.<name> = { ... };
+```
+
+Copy, rename, change `port` / `dataDir` / `projectId`. Nothing else.
+
+**Redis — paranoid durability**
 
 ```nix
-services.nixdb.mysql.instances.mysql-example = {
-  dataDir = "/srv/databases/mysql/mysql-example";
+services.nixdb.redis.instances.paranoid = {
+  dataDir = "/var/lib/databases/redis/paranoid";
   mountPoint = "/";
   projectId = 2002;
-  diskLimit = "10G";
+  diskLimit = "20G";
+  port = 6381;
+  maxMemory = "1G";
+  persistence = {
+    appendOnly = true;
+    appendFsync = "always";
+  };
+  memoryHigh = "1200M";
+  memoryMax = "1500M";
+  cpuWeight = 100;
+};
+```
+
+**Dragonfly — cache mode**
+
+```nix
+services.nixdb.dragonfly.instances.cache = {
+  dataDir = "/var/lib/databases/dragonfly/cache";
+  mountPoint = "/";
+  projectId = 2003;
+  diskLimit = "20G";
+  port = 6380;
+  maxMemory = "2G";
+  cacheMode = true;
+  memoryHigh = "2500M";
+  memoryMax = "3G";
+  cpuWeight = 100;
+};
+```
+
+**MySQL — minimal**
+
+```nix
+services.nixdb.mysql.instances.main = {
+  dataDir = "/var/lib/databases/mysql/main";
+  mountPoint = "/";
+  projectId = 2004;
+  diskLimit = "20G";
   port = 3306;
   adminUser = "dbadmin";
   password = "CHANGE_ME";
-  cpuWeight = 100;
   bufferPool = "1G";
-  maxConnections = 100;
+  maxConnections = 200;
   memoryHigh = "2G";
   memoryMax = "3G";
-};
-
-services.nixdb.manticore.instances.search-example = {
-  dataDir = "/srv/databases/manticore/search-example";
-  mountPoint = "/";
-  projectId = 2003;
-  diskLimit = "10G";
-  sqlPort = 9306;
-  httpPort = 9308;
-  adminUser = "dbadmin";
-  password = "CHANGE_ME";
   cpuWeight = 100;
-  memoryHigh = "2G";
-  memoryMax = "3G";
 };
 ```
 
-Listeners default to `127.0.0.1` and `openFirewall = false`. Remote exposure
-must be an explicit downstream decision.
+Same file, same workflow, no new systemd boilerplate.
 
-## Instance fields
+---
 
-Common fields are `dataDir`, `mountPoint`, stable `projectId`, `diskLimit`,
-`cpuWeight`, `memoryHigh`, `memoryMax`, `memorySwapMax`, `adminUser`, and
-`password`. MongoDB adds `port` and WiredTiger `cacheGB`; MySQL adds `port`,
-`bufferPool`, and `maxConnections`; Manticore adds `sqlPort` and `httpPort`.
-Redis adds `maxMemory`, ACL/TLS, RDB/AOF, a Unix socket, and `extraConfig`.
-Dragonfly adds `maxMemory`, `cacheMode`, snapshots, ACL/TLS, optional
-Memcached/admin listeners, tiering, and `extraFlags`. Every engine supports
-`bindAddress` and `openFirewall` where that native listener exists.
+## Storage — spread across disks
 
-Credentials currently become part of the downstream Nix store and host Git
-history if committed. Keep that repository private, limit access, and layer a
-different secret-management mechanism when your threat model requires it.
+Yes — put instances on different filesystems.
 
-## Storage and resources
+```nix
+# fast NVMe pool
+services.nixdb.redis.instances.hot = {
+  dataDir = "/var/lib/databases/redis/hot";
+  mountPoint = "/";
+  projectId = 2010;
+  diskLimit = "50G";
+  # ...
+};
 
-Every declared `mountPoint` must be XFS and mounted with `prjquota`. nixdb
-assigns the data directory to its stable XFS project ID and reapplies the hard
-quota idempotently. It does not make project quotas work on other filesystems.
+# second SSD / data array
+services.nixdb.dragonfly.instances.archive = {
+  dataDir = "/data/databases/dragonfly/archive";
+  mountPoint = "/data";
+  projectId = 2020;
+  diskLimit = "200G";
+  # ...
+};
+```
 
-`database.slice` supplies a combined memory envelope. Instances remain CPU
-elastic: `CPUWeight` affects scheduling only under contention; nixdb adds no
-CPU quota or pinning. `MemoryMax` may cause a cgroup OOM when exceeded. An XFS
-hard quota causes later writes to fail when full. Internal database caches
-should remain comfortably below `MemoryMax`.
+> **nixdb does not format or partition disks.**
+> NixOS mounts the filesystem (must be **XFS** with `prjquota`); nixdb manages the instance and its quota/resources on that mount.
 
-Redis and Dragonfly have a mandatory two-layer memory contract: their engine
-limit (`maxMemory`) is separate from cgroup `MemoryHigh` and `MemoryMax`.
-`MemoryMax` is deliberately not derived from `maxMemory`; leave explicit
-headroom for allocator fragmentation, client/replication buffers, and Redis
-AOF/RDB rewrite or fork overhead. See [Redis](docs/redis.md) and
-[Dragonfly](docs/dragonfly.md).
+Each `mountPoint` must be XFS with `prjquota`. nixdb assigns the stable `projectId` to `dataDir` and reapplies the hard `diskLimit` idempotently. No other filesystems are made to support project quotas.
 
-Public, fake-credential configuration examples are available in
-[`examples/redis.nix`](examples/redis.nix) and
-[`examples/dragonfly.nix`](examples/dragonfly.nix).
+---
+
+## Supported engines
+
+| Engine | Version | Highlights |
+|---|---|---|
+| **MongoDB** | `8.2.11` | WiredTiger `cacheGB`, auth, SSPL — review [third-party](docs/third-party.md) |
+| **MySQL** | `8.4.10` | `bufferPool` · `maxConnections` · auth |
+| **Manticore Search** | `28.6.6` bundle | Search + Buddy · Columnar · Secondary · KNN (coupled bundle) |
+| **Redis** | `8.10.0` | ACL · TLS · AOF/RDB · eviction · 4 modules (Bloom/Search/JSON/TimeSeries) + vector-sets |
+| **Dragonfly** | `1.40.1` | snapshots · cache/store · TLS · Memcached · tiering |
+
+Versions are declared in [`versions/default.nix`](versions/default.nix) and asserted against the actual packages. No silent drift.
+
+Full pinning details: [versions](docs/versions.md) · [redis](docs/redis.md) · [dragonfly](docs/dragonfly.md) · [manticore](docs/manticore.md)
+
+---
+
+## Why nixdb
+
+Without it, every instance means hand-written config, systemd units, directories, ports, quotas, cgroup limits, health scripts, and upgrade checklists — multiplied by engines.
+
+With nixdb:
+
+```text
+  Nix config (databases.nix)
+            │
+            ▼
+          nixdb
+            │
+      ┌─────┼──────────┬────────┬──────────┬─────────┐
+      ▼     ▼          ▼        ▼          ▼         ▼
+  package  config  systemd  quota   cgroup   health + manifest
+                                                        │
+                                              /etc/nixdb/manifest.json
+```
+
+One declarative inventory → consistent, reproducible, auditable lifecycle. No containers. No orchestration magic you didn't ask for.
+
+What you get:
+
+- isolated engine modules, multiple instances per engine
+- independently pinned packages (MongoDB/MySQL via locked nixpkgs, Redis/Dragonfly/Manticore via hash-pinned expressions)
+- `CPUWeight` · `MemoryHigh` · `MemoryMax` per instance + engine-internal limits
+- XFS project quotas per data directory with duplicate-port/path/ID checks at eval time
+- sanitized, schema-versioned runtime manifest for operator tooling
+- explicit, extension-friendly engine contract
+
+What you don't get (by design): clustering, replication/failover orchestration, DB-content rollback, backups.
+
+---
+
+## Resource model
+
+Engine limit and cgroup limit are **separate, deliberate controls**:
+
+```text
+ Redis/Dragonfly maxMemory   →   engine eviction / OOM policy
+        ↓ headroom for allocator, buffers, forks, rewrites
+ systemd MemoryHigh          →   reclaim pressure starts
+ systemd MemoryMax           →   hard cgroup ceiling (OOM)
+```
+
+Example:
+
+```nix
+maxMemory  = "6G";   # engine
+memoryHigh = "7G";   # cgroup pressure
+memoryMax  = "8G";   # cgroup hard limit
+```
+
+`MemoryMax` is never derived from `maxMemory`. You keep the headroom explicit. nixdb rejects `maxMemory > memoryMax`.
+
+This applies to every engine with an internal cache: MongoDB `cacheGB`, MySQL `bufferPool`, Redis/Dragonfly `maxMemory` — all validated against `memoryMax` before activation.
+
+---
+
+## Persistence
+
+**Redis** — choose what fits the use case:
+
+| Mode | Config |
+|---|---|
+| `everysec` | `appendOnly = true; appendFsync = "everysec";` |
+| `always` | `appendOnly = true; appendFsync = "always";` — max durability, higher latency |
+| `RDB only` | default `save` rules, `appendOnly = false` |
+| `AOF + RDB` | `appendOnly = true;` + `saveRules` |
+| `none` | `persistence.saveRules = [ ]; appendOnly = false;` |
+
+> `appendFsync = "always"` fsyncs every write — not a generic power-loss guarantee beyond Redis durability semantics.
+
+**Dragonfly v1.40.1** — no AOF. Snapshots only:
+
+```nix
+persistence = {
+  dbFilename = "dump-{timestamp}";  # extensionless when dfSnapshotFormat = true
+  snapshotCron = "*/5 * * * *";
+};
+```
+
+nixdb rejects `persistence.aof.enable = true` on Dragonfly — no silent emulation.
+
+Details: [docs/redis.md](docs/redis.md) · [docs/dragonfly.md](docs/dragonfly.md)
+
+---
 
 ## Operator CLI
 
-When `services.nixdb.operator.enable` is true, the module installs `nixdb`
-system-wide. Evaluated non-secret inventory is written to the schema-versioned
-`/etc/nixdb/manifest.json`; health credentials are kept separately in a
-root-only file. Passwords never appear in the manifest or CLI output.
+When `services.nixdb.operator.enable` (default `true`), `nixdb` is installed system-wide. Secrets never appear in the manifest or CLI output.
+
+**Inspect**
 
 ```console
-sudo nixdb status
-sudo nixdb status --json
-sudo nixdb health
-sudo nixdb doctor
-sudo nixdb wait [instance]
-sudo nixdb versions
-sudo nixdb quotas
-sudo nixdb resources
-sudo nixdb config
-sudo nixdb logs mongo-example
-sudo nixdb restart mongo-example
-sudo nixdb plan --latest
-sudo nixdb update
-sudo nixdb deploy <release/ref>
-sudo nixdb rollback
+nixdb status              # human-readable inventory + generations
+nixdb status --json
+nixdb health              # authenticated probes, listeners, quotas, cgroups
+nixdb doctor              # operator env & prerequisites (no DB connections)
+nixdb wait                # block until all instances are ready (60s, 1s interval)
+nixdb wait cache --timeout 90
+nixdb versions            # declared vs. packaged vs. runtime
+nixdb quotas              # XFS project quotas live
+nixdb resources           # cgroups live
+nixdb config              # rendered configs (sanitized)
+nixdb logs  <instance>
+nixdb restart <instance>  # + readiness probe before returning
 ```
 
-Read-only commands use the runtime manifest and continue to work when the host
-configuration is not a Git checkout. Deployment commands intentionally require
-a clean Git checkout. `plan` is itself non-mutating, but automatically uses
-`sudo` when a root-owned deployment checkout needs it; a readable checkout is
-planned without escalation.
+**Deploy**
 
-`nixdb plan` evaluates the candidate in a private temporary copy and never
-changes the host lock or activates services. `nixdb update` accepts only the
-newest exact `vMAJOR.MINOR.PATCH` tag by default; prereleases require an explicit
-ref. If MongoDB, MySQL, Manticore Search, Redis, Dragonfly, or the coupled Manticore bundle changes,
-deployment stops before `nixos-rebuild test`. Proceed only after reviewing the
-upstream migration and backups:
+```console
+nixdb plan                # newest stable vMAJOR.MINOR.PATCH (non-mutating, private tmp copy)
+nixdb plan --main         # development branch
+nixdb plan v0.3.0         # exact tag/ref
+nixdb deploy v0.3.0
+nixdb update              # newest stable via flake input
+nixdb rollback            # exact recorded generation or explicit fallback
+```
+
+Read-only commands are **Git-independent** — they use `/etc/nixdb/manifest.json`. Deployment requires a clean Git checkout and is serialized via `/run/lock/nixdb-deploy.lock`.
+
+Full workflow: [docs/operations.md](docs/operations.md)
+
+---
+
+## Upgrade safety
+
+Database engine version changes are **detected before activation**.
+
+```console
+nixdb plan
+# → shows every current → candidate DB version
+# → if MongoDB/MySQL/Manticore/Redis/Dragonfly changes:
+#   blocked before nixos-rebuild test
+```
+
+Proceed only after reading upstream migration notes and verifying backups:
 
 ```console
 sudo nixdb update --allow-db-upgrade
 sudo nixdb deploy v0.3.0 --allow-db-upgrade
 ```
 
-The updater changes only the downstream input named `nixdb`; it never performs
-a general flake update. Mutating deployment operations are serialized and use
-transaction recovery. See [operations](docs/operations.md).
+- Plain `nixos-rebuild switch` stays fully NixOS-native.
+- `nixdb plan` / `update` / `deploy` is the **guarded operator workflow** on top.
+- Rollback restores NixOS/system configuration — **never** database contents or file formats (migration may be irreversible). Downgrade of DB binaries requires `--allow-db-binary-rollback` after compatibility review.
 
-### Target-version bootstrap upgrades
+---
 
-An installed older CLI cannot contain safety improvements added by a future
-release. The public flake therefore exports the same CLI as both a package and
-an app:
+## Native escape hatches
 
-```console
-nix build github:MrShitFox/nixdb/v0.2.3#nixdb
-nix run github:MrShitFox/nixdb/v0.2.3#nixdb -- help
+Typed options cover common production settings. When you need more, nixdb doesn't box you in — but it does refuse silent collisions.
+
+**Redis — `extraConfig`**
+
+```nix
+services.nixdb.redis.instances.advanced.extraConfig = {
+  "notify-keyspace-events" = "Ex";
+  "repl-diskless-sync-delay" = 5;
+};
+# extraConfigLines for directives without a simple key/value shape
 ```
 
-To upgrade a legacy host using the target release's deployment code, run that
-same app with an explicit downstream context. These flags are command-line
-context, not privileged environment overrides:
+**Dragonfly — `extraFlags`**
 
-```console
-sudo nix run github:MrShitFox/nixdb/v0.2.3#nixdb -- \
-  --config-root /etc/nixos --flake-host db-host --input-name nixdb \
-  deploy v0.2.3
+```nix
+services.nixdb.dragonfly.instances.advanced.extraFlags = {
+  "num_shards" = 2;
+};
 ```
 
-For an unpublished development candidate, substitute an immutable local flake
-reference and make the downstream input point to it only through the candidate
-transaction:
+> *Typed options for the common case. Native directives for the rest. Collision with a nixdb-owned setting is a build-time error, never a silent override. Dragonfly flags are validated against the exact pinned binary's `--help`.*
 
-```console
-sudo nix run path:/path/to/nixdb-v0.2.3#nixdb -- \
-  --config-root /etc/nixos --flake-host db-host --input-name nixdb \
-  deploy --input-url path:/path/to/nixdb-v0.2.3
+This keeps automation safe without limiting an experienced admin.
+
+---
+
+## Tested for real
+
+v0.3.0 verified on a live NixOS host:
+
+```text
+16 managed services
+  MongoDB  ×5
+  MySQL    ×2
+  Manticore ×3
+  Redis    ×4
+  Dragonfly ×2
 ```
 
-This is not a second updater: it is exactly the CLI that the target NixOS
-module installs. `--input-url` is explicit and is intended for local/bootstrap
-testing; normal public upgrades should use a stable tag.
+Covered:
 
-### Rollback semantics
+- cold reboot → all instances converge
+- Redis AOF (`always`/`everysec`) + RDB persistence and recovery
+- Dragonfly snapshot persistence and restore
+- XFS project quotas (`prjquota`) per `dataDir`
+- cgroup `MemoryHigh`/`MemoryMax` pressure and OOM behavior
+- ACL (users, key/channel patterns) and TLS/mTLS
+- restart / readiness probes and VM integration
 
-When valid deployment state describes the active system, `nixdb rollback` uses
-its exact recorded previous nixdb generation. Unrelated intermediate NixOS
-generations are not equivalent rollback targets. If that evidence is absent,
-invalid, stale, or unavailable, nixdb emits an explicit warning and uses the
-previous NixOS generation only as a compatibility fallback.
+> No host IPs, hostnames, credentials, project IDs, or private filesystem details are disclosed. The VM check (`nix build .#vm-integration-test`) covers lifecycle/auth/resources without claiming XFS coverage it doesn't provide.
 
-Rollback changes NixOS/system configuration only; it does not roll back
-database contents or database file formats. A rollback that could downgrade
-database binaries remains blocked unless the operator reviews compatibility and
-passes `--allow-db-binary-rollback`.
+---
 
-## Adding an instance or engine
+## Documentation
 
-Another instance normally requires only a new inventory entry with unique
-ports, data directory, and project ID. To add a completely new engine, create
-`modules/nixdb/engines/<engine>.nix`, keep its lifecycle and authentication
-inside that file, and register only normalized metadata with core. See
-[adding an engine](docs/adding-engine.md).
+| Topic | Link |
+|---|---|
+| Operations & deployment | [docs/operations.md](docs/operations.md) |
+| Redis | [docs/redis.md](docs/redis.md) |
+| Dragonfly | [docs/dragonfly.md](docs/dragonfly.md) |
+| Architecture | [docs/architecture.md](docs/architecture.md) |
+| Adding an engine | [docs/adding-engine.md](docs/adding-engine.md) |
+| Versions & pinning | [docs/versions.md](docs/versions.md) |
+| Manticore bundle | [docs/manticore.md](docs/manticore.md) |
+| Third-party licenses | [docs/third-party.md](docs/third-party.md) |
+| Security | [SECURITY.md](SECURITY.md) |
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Changelog | [CHANGELOG.md](CHANGELOG.md) |
+| Examples | [examples/redis.nix](examples/redis.nix) · [examples/dragonfly.nix](examples/dragonfly.nix) |
+| Template | [`nix flake new -t github:MrShitFox/nixdb/v0.3.0#single-host`](templates/single-host) |
 
-## Version management
-
-NixOS, MongoDB, MySQL, Manticore, Redis, and Dragonfly versions are separate
-decisions. Database packages use independently locked inputs or
-repository-owned immutable package expressions. Manticore's coupled components
-move as one validated bundle. See [versions](docs/versions.md),
-[Redis](docs/redis.md), and [Dragonfly](docs/dragonfly.md).
+---
 
 ## Build and test
 
@@ -298,39 +466,14 @@ nix fmt -- --check $(git ls-files '*.nix')
 nix flake check --print-build-logs
 bash tests/cli.sh .
 bash tests/no-secrets.sh .
+nix build .#vm-integration-test --no-link --print-build-logs  # optional, after module/CLI changes
 ```
 
-The fast flake checks cover CLI behavior, module evaluation, ShellCheck, and
-secret sanity. The real NixOS VM integration check is available separately:
+Only `x86_64-linux` is supported. MongoDB Community Server is SSPL-licensed — see [third-party licensing](docs/third-party.md).
 
-```console
-nix build .#vm-integration-test --no-link --print-build-logs
-```
-
-XFS project-quota acceptance still requires a real host mounted with
-`prjquota`; the VM check does not pretend to validate an XFS environment it
-does not provide.
-
-Downstream host deployment:
-
-```console
-sudo nixos-rebuild build --flake .#db-host
-sudo nixos-rebuild test --flake .#db-host
-sudo nixos-rebuild switch --flake .#db-host
-```
-
-## Documentation
-
-- [Architecture](docs/architecture.md)
-- [Operations](docs/operations.md)
-- [Version management](docs/versions.md)
-- [Adding an engine](docs/adding-engine.md)
-- [Manticore package](docs/manticore.md)
-- [Third-party licensing](docs/third-party.md)
+---
 
 ## License
 
-SPDX-License-Identifier: `GPL-3.0-or-later`
-
-nixdb is licensed under the GNU GPL v3 or later. See [COPYING](COPYING).
+`GPL-3.0-or-later` — see [COPYING](COPYING).
 Third-party database software retains its own license.
