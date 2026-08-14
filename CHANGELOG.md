@@ -1,16 +1,32 @@
 # Changelog
 
-## Unreleased v0.3.0
+## v0.3.0 - 2026-08-14
 
 ### Added
 
-- Redis Open Source and Dragonfly multi-instance engines with independently
-  pinned packaging, version guards, resource/cgroup/quota integration, and
-  operator CLI metadata.
-- Redis RDB/AOF controls, ACL, TLS, Unix socket, module-aware health checks,
-  and collision-checked native configuration.
-- Dragonfly snapshots, cache/store mode, ACL, TLS, optional Memcached/admin
-  listeners, tiering metadata, and collision-checked native flags.
+- Redis Open Source 8.10.0 with independently pinned package from immutable commit archive, separate `redis` package, version guard and flake metadata.
+- Dragonfly 1.40.1 with BSL 1.1 source-available pin, separate `dragonfly` package, version guard.
+- Full nixdb engine integration for both in-memory engines: NixOS modules, XFS project quotas, cgroup `MemoryHigh`/`MemoryMax`/`MemorySwapMax`/`CPUWeight`, firewall ports, normalized `instances` metadata and `nixdb` CLI/manifest.
+- Redis persistence: RDB `save` rules and `dbFilename`/`rdbCompression`/`rdbChecksum`, AOF `appendOnly`/`appendFsync` `always`/`everysec`/`no`/`noAppendfsyncOnRewrite`/`autoAofRewrite*`/`aofUseRdbPreamble`, and combined RDB+AOF.
+- Redis ACL: declarative `authentication` with `adminUser`/`password`, `defaultUser` and named `users` each with `commands`/`keys`/`channels` (e.g. `~app:*`, `&app:*`), rendered via `aclfile`, restart-triggered.
+- Redis TLS and mutual TLS: `tls.enable`/`port`/`certFile`/`keyFile`/`caFile`/`authClients` plus `healthClientCertFile`/`healthClientKeyFile` for health probes, validated via real certs.
+- Redis 8 bundled modules and features verified at runtime: `redisbloom`, `redisearch`, `rejson`, `redistimeseries` plus built-in `vector-sets`.
+- Redis `maxmemory`, `maxMemoryPolicy` and `maxMemorySamples` with `maxmemory <= memoryMax` headroom assertion and engine limit reporting.
+- Dragonfly snapshots: `persistence.dbFilename`, `snapshotCron`, `dfSnapshotFormat`, snapshot discovery and restore verified after restart and reboot.
+- Dragonfly cache/store modes: `cacheMode` true/false with `maxmemory` semantics.
+- Dragonfly ACL: declarative users with `keys` `~app:*` and `channels` `&app:*` via `aclfile`, restart and reboot persistence.
+- Dragonfly TLS and mutual TLS: `tls` with `certFile`/`keyFile`/`caFile`/`authClients` and health client cert/key.
+- Dragonfly Memcached listener: `memcached.port` with EOF-driven health probe.
+- Dragonfly admin/metrics listener: `admin.port`.
+- Dragonfly SSD tiering: `tiering.enable`/`mountPoint`/`prefix`/`maxFileSize` with validation, documented as not silently emulated.
+- Native Redis `extraConfig`/`extraConfigLines` escape hatch with deterministic ownership and collision-checked directives.
+- Native Dragonfly `extraFlags` escape hatch with collision-checked flags.
+- XFS quota and cgroup resource integration for Redis and Dragonfly: stable `projectId`, `dataDir`/`mountPoint`/`prjquota`, `diskLimit`, per-instance `memoryHigh`/`memoryMax`/`memorySwapMax`/`cpuWeight`.
+- CLI, manifest and update-guard integration: `nixdb versions`/`config`/`health`/`wait`/`restart`/`doctor`/`status` handle Redis and Dragonfly, `nixdb plan`/`update` guard `redis`/`dragonfly` versions, manifest `engineMetadata` and `internalCache` for both.
+
+Dragonfly v1.40.1 does not support AOF. nixdb rejects Dragonfly AOF configuration instead of emulating it.
+
+nixdb does not orchestrate Redis Sentinel/Cluster or Dragonfly HA topology.
 
 ## v0.2.3 - 2026-08-13
 
