@@ -157,7 +157,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("redis-cli -p 16391 --user vm-reader --pass VM_REDIS_READER_PASSWORD_NIXDB_TEST SET vm:reader denied 2>&1 | grep -F NOPERM")
     machine.succeed("redis-cli -p 16391 --user vm-reader --pass WRONG_PASSWORD GET vm:reader 2>&1 | grep -Eqi 'WRONGPASS|NOAUTH'")
     machine.succeed("redis-cli -p 16391 --user nixdb-admin --pass VM_REDIS_PASSWORD_NIXDB_TEST --raw MODULE LIST | grep -Ex '(bf|search|ReJSON|timeseries)'")
-    machine.succeed("redis-cli -p 16391 --user nixdb-admin --pass VM_REDIS_PASSWORD_NIXDB_TEST CONFIG GET maxmemory | grep -Fx 536870912")
+    machine.succeed("redis-cli -p 16391 --user nixdb-admin --pass VM_REDIS_PASSWORD_NIXDB_TEST CONFIG GET maxmemory | grep -Fx 512000000")
     machine.succeed("redis-cli -p 16391 --user nixdb-admin --pass VM_REDIS_PASSWORD_NIXDB_TEST SET vm:redis persisted")
     machine.succeed("redis-cli -p 16391 --user nixdb-admin --pass VM_REDIS_PASSWORD_NIXDB_TEST SAVE")
     machine.succeed("systemctl restart redis-vm.service")
